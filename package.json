@@ -1,0 +1,40 @@
+{
+  "name": "shopify-theme-inspector-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for profiling and debugging Liquid templates on Shopify stores",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "shopify-theme-inspector-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "inspector": "npx @anthropic-ai/mcp-inspector node dist/index.js"
+  },
+  "keywords": [
+    "shopify",
+    "theme",
+    "liquid",
+    "profiler",
+    "mcp",
+    "devtools",
+    "performance"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "puppeteer": "^22.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
