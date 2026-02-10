@@ -6,7 +6,9 @@ import { z } from "zod";
 
 // Auth imports
 import { loginToShopify, checkAuthStatus, getStoreCookies } from "./auth/shopify-oauth.js";
-import { getAuthenticatedStores, deleteSession, normalizeStoreUrl } from "./auth/session-manager.js";
+import { getAuthenticatedStores, deleteSession, normalizeStoreUrl, getSession } from "./auth/session-manager.js";
+import { fetchThemeAsset, listThemeAssets } from "./api/theme-assets.js";
+import { analyzeLiquidCode } from "./profiler/static-analysis.js";
 
 // Profiler imports
 import { profilePage } from "./profiler/page-profiler.js";
@@ -366,6 +368,80 @@ server.tool(
         },
       ],
     };
+  }
+);
+
+import { getThemes } from "./api/theme-assets.js";
+
+// ============================================================================
+// TOOL: analyze_liquid_file
+// Statically analyze Liquid files for performance issues
+// ============================================================================
+server.tool(
+  "analyze_liquid_file",
+  "Statically analyze a specific Liquid file (or critical theme files) for performance anti-patterns like `all_products` usage.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    fileName: z.string().optional().describe("Specific file to analyze (e.g., 'layout/theme.liquid'). If omitted, analyzes layout/theme.liquid."),
+    themeId: z.number().optional().describe("Theme ID to analyze. Defaults to the live (main) theme."),
+  },
+  async ({ storeUrl, fileName, themeId }) => {
+    const session = getSession(normalizeStoreUrl(storeUrl));
+    if (!session) {
+       return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, message: "Not authenticated" }, null, 2) }]
+       };
+    }
+
+    try {
+      // Resolve theme ID
+      let targetThemeId = themeId;
+      if (!targetThemeId) {
+        const themes = await getThemes(session);
+        const mainTheme = themes.find(t => t.role === "main");
+        if (!mainTheme) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ success: false, message: "Could not find main theme." }, null, 2) }]
+            };
+        }
+        targetThemeId = mainTheme.id;
+      }
+
+      // Determine file(s) to analyze
+      // If fileName is provided, analyze one. If not, analyze 'layout/theme.liquid' as default sample.
+      const targetFile = fileName || "layout/theme.liquid";
+      
+      const asset = await fetchThemeAsset(session, targetThemeId, targetFile);
+      if (!asset || !asset.value) {
+           return {
+            content: [{ type: "text", text: JSON.stringify({ success: false, message: `File '${targetFile}' not found in theme ${targetThemeId}.` }, null, 2) }]
+           };
+      }
+
+      const analysis = analyzeLiquidCode(asset.value);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              storeUrl: session.storeUrl,
+              themeId: targetThemeId,
+              file: targetFile,
+              score: analysis.score,
+              issues: analysis.issues
+            }, null, 2),
+          },
+        ],
+      };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }]
+      };
+    }
   }
 );
 
