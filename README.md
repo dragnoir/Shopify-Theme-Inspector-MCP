@@ -36,19 +36,20 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 
 ### Available Tools
 
-| Tool              | Description                               |
-| ----------------- | ----------------------------------------- |
-| `health_check`    | Verify the MCP server is running          |
-| `login`           | Open browser to authenticate with Shopify |
-| `logout`          | Remove saved authentication for a store   |
-| `get_auth_status` | Check authentication status               |
-| `profile_page`    | Profile a store page (coming in Phase 3)  |
+| Tool                  | Description                                     |
+| --------------------- | ----------------------------------------------- |
+| `health_check`        | Verify the MCP server is running                |
+| `login`               | Open browser to authenticate with Shopify       |
+| `logout`              | Remove saved authentication for a store         |
+| `get_auth_status`     | Check authentication status                     |
+| `profile_page`        | Profile a store page (raw profiling data)       |
+| `get_profile_summary` | Profile with human-readable performance summary |
 
 ## Development Status
 
 - [x] Phase 1: Project Setup & Basic MCP Server
 - [x] Phase 2: Shopify Authentication Module
-- [ ] Phase 3: Basic Profiling (MVP)
+- [x] Phase 3: Basic Profiling (MVP)
 - [ ] Phase 4: Flame Graph Processing
 - [ ] Phase 5: Performance Analysis Tools
 - [ ] Phase 6: Advanced Features

@@ -16,12 +16,12 @@
 - [x] Add store configuration resource
 - [x] Test authentication flow
 
-## Phase 3: Profiler Core - Basic Profiling
+## Phase 3: Profiler Core - Basic Profiling ✅
 
-- [ ] Implement store URL fetching with profiling enabled
-- [ ] Parse profiling data from response headers/body
-- [ ] Create basic profiling result interface
-- [ ] Implement `profile_page` tool (MVP)
+- [x] Implement store URL fetching with profiling enabled
+- [x] Parse profiling data from response headers/body
+- [x] Create basic profiling result interface
+- [x] Implement `profile_page` tool (MVP)
 - [ ] Test profiling on a sample store
 
 ## Phase 4: Flame Graph Data Processing

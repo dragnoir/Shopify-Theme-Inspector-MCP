@@ -8,6 +8,10 @@ import { z } from "zod";
 import { loginToShopify, checkAuthStatus, getStoreCookies } from "./auth/shopify-oauth.js";
 import { getAuthenticatedStores, deleteSession, normalizeStoreUrl } from "./auth/session-manager.js";
 
+// Profiler imports
+import { profilePage } from "./profiler/page-profiler.js";
+import { generateSummary } from "./profiler/flamegraph-parser.js";
+
 // Create the MCP server instance
 const server = new McpServer({
   name: "shopify-theme-inspector",
@@ -39,8 +43,8 @@ server.tool(
               "login",
               "logout", 
               "get_auth_status",
-              "profile_page (coming soon)",
-              "get_profile_summary (coming soon)",
+              "profile_page",
+              "get_profile_summary",
               "find_slow_templates (coming soon)",
               "get_bottlenecks (coming soon)",
             ],
@@ -178,10 +182,10 @@ server.tool(
 // ============================================================================
 server.tool(
   "profile_page",
-  "Profile a Shopify store page to analyze Liquid template rendering performance. Requires authentication first.",
+  "Profile a Shopify store page to analyze Liquid template rendering performance. Returns raw profiling data including timing for each Liquid node. Requires authentication first (use the login tool).",
   {
     storeUrl: z.string().describe("The Shopify store URL (e.g., mystore.myshopify.com)"),
-    pagePath: z.string().optional().describe("The page path to profile (e.g., /products/example). Defaults to homepage."),
+    pagePath: z.string().optional().describe("The page path to profile (e.g., /products/example). Defaults to homepage '/'"),
   },
   async ({ storeUrl, pagePath }) => {
     // Check authentication first
@@ -202,18 +206,107 @@ server.tool(
         ],
       };
     }
-    
-    // Placeholder for Phase 3 implementation
+
+    const result = await profilePage({
+      storeUrl,
+      pagePath: pagePath || "/",
+    });
+
+    if (!result.success || !result.data) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              storeUrl: result.storeUrl,
+              pagePath: result.pagePath,
+              error: result.error,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
     return {
       content: [
         {
           type: "text",
           text: JSON.stringify({
-            status: "not_implemented",
-            message: "Profiling functionality will be implemented in Phase 3.",
-            authenticated: true,
-            storeUrl: authStatus.storeUrl,
-            pagePath: pagePath || "/",
+            success: true,
+            storeUrl: result.storeUrl,
+            pagePath: result.pagePath,
+            profileUrl: result.profileUrl,
+            totalTime: result.data.totalTime,
+            nodeCount: result.data.nodeCount,
+            timestamp: result.data.timestamp,
+            rawData: result.data.raw,
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
+// TOOL: get_profile_summary
+// Get a human-readable performance summary for a store page
+// ============================================================================
+server.tool(
+  "get_profile_summary",
+  "Profile a Shopify store page and return a structured performance summary with top slow nodes and template breakdown. More readable than raw profile_page data. Requires authentication first.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL (e.g., mystore.myshopify.com)"),
+    pagePath: z.string().optional().describe("The page path to profile (e.g., /products/example). Defaults to homepage '/'"),
+  },
+  async ({ storeUrl, pagePath }) => {
+    const authStatus = checkAuthStatus(storeUrl);
+    
+    if (!authStatus.authenticated) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              message: `Not authenticated. ${authStatus.message}`,
+              action: "Please use the 'login' tool first.",
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const result = await profilePage({
+      storeUrl,
+      pagePath: pagePath || "/",
+    });
+
+    if (!result.success || !result.data) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: result.error,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const summary = generateSummary(result.data);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            storeUrl: result.storeUrl,
+            pagePath: result.pagePath,
+            summary,
           }, null, 2),
         },
       ],
