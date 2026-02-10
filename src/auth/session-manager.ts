@@ -8,6 +8,7 @@ const SESSION_FILE = path.join(SESSION_DIR, "sessions.json");
 
 export interface ShopifySession {
   storeUrl: string;
+  customDomain?: string;
   storeName: string;
   cookies: Array<{
     name: string;
@@ -153,4 +154,18 @@ export function getAdminUrl(storeUrl: string): string {
 export function getStorefrontUrl(storeUrl: string): string {
   const normalized = normalizeStoreUrl(storeUrl);
   return `https://${normalized}`;
+}
+
+/**
+ * Find the primary myshopify.com session.
+ * Useful when we are on a custom domain but need checking admin/api.
+ */
+export function getPrimaryMyshopifySession(): ShopifySession | null {
+    const store = loadSessions();
+    for (const key in store.sessions) {
+        if (key.includes('.myshopify.com')) {
+            return store.sessions[key];
+        }
+    }
+    return null;
 }

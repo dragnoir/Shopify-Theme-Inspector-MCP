@@ -79,14 +79,37 @@ export async function loginToShopify(storeUrl: string): Promise<LoginResult> {
       };
     }
 
-    // Extract cookies after successful login
-    const cookies = await page.cookies();
+    // Extract admin cookies after successful login
+    const adminCookies = await page.cookies();
+    
+    // Now navigate to the storefront to ensure we get cookies for the custom domain too
+    // (e.g., if store is onebed.com.au, we need cookies for that domain, not just myshopify.com)
+    console.error(`Navigating to storefront: ${normalizedUrl} to capture session...`);
+    try {
+      // We go to the .myshopify.com URL first, which might redirect to the custom domain
+      // This often triggers the session handshake to set cookies on the custom domain
+      await page.goto(`https://${normalizedUrl}`, { waitUntil: "networkidle2" });
+      
+      // Also strictly go to the provided storeUrl if it's different (e.g. custom domain)
+      if (!normalizedUrl.includes(storeUrl) && storeUrl.includes(".")) {
+         await page.goto(`https://${storeUrl}`, { waitUntil: "networkidle2" });
+      }
+    } catch (e) {
+      console.error("Warning: Could not navigate to storefront to capture cookies", e);
+    }
+    
+    // Capture cookies again (now includes storefront cookies AND admin cookies)
+    // We use CDP Network.getAllCookies because page.cookies() only returns cookies for the current URL
+    // and we might be on the custom domain storefront, missing the admin.shopify.com cookies from the login step.
+    const client = await page.target().createCDPSession();
+    const { cookies: allCookies } = await client.send('Network.getAllCookies');
     
     // Create session object
     const session: ShopifySession = {
-      storeUrl: normalizedUrl,
+      storeUrl: normalizedUrl, // We keep the myshopify handle as primary key
+      customDomain: storeUrl !== normalizedUrl ? storeUrl : undefined,
       storeName: await extractStoreName(page),
-      cookies: cookies.map((c) => ({
+      cookies: allCookies.map((c) => ({
         name: c.name,
         value: c.value,
         domain: c.domain,

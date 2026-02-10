@@ -4,8 +4,10 @@ import {
   normalizeStoreUrl,
   isSessionValid,
   getStorefrontUrl,
+  getPrimaryMyshopifySession,
 } from "../auth/session-manager.js";
-import { ProfileResult, ProfilingData } from "./flamegraph-parser.js";
+import { ProfileResult, ProfilingData, parseProfilingTree } from "./flamegraph-parser.js";
+import { analyzeProfile } from "./profile-analyzer.js";
 
 export interface ProfilePageOptions {
   storeUrl: string;
@@ -48,6 +50,10 @@ export async function profilePage(
     });
 
     const page = await browser.newPage();
+  
+  // Set User Agent to avoid Cloudflare/Bot detection on headless requests
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
 
     // Set stored cookies for authentication
     const cookiesToSet = session.cookies.map((c) => ({
@@ -62,13 +68,19 @@ export async function profilePage(
     await page.setCookie(...cookiesToSet);
 
     // Build the profiling URL with ?profile_liquid=true
-    const baseUrl = getStorefrontUrl(normalizedUrl);
+    // CRITICAL: We must use the .myshopify.com domain because that's where our
+    // admin session cookies (koa.sid, _shopify_y, etc.) are valid.
+    // If we use a custom domain (e.g., onebed.com.au), the browser won't send
+    // the admin cookies, and Shopify won't return profiling data.
+    const baseUrl = `https://${normalizedUrl}`;
     const cleanPath = pagePath.startsWith("/") ? pagePath : `/${pagePath}`;
     const url = new URL(cleanPath, baseUrl);
     url.searchParams.set("profile_liquid", "true");
+    // Add preview_theme_id if you want to profile a specific theme, 
+    // but for now we profile the live theme.
 
     const profileUrl = url.toString();
-    console.error(`Profiling: ${profileUrl}`);
+    console.error(`Profiling on admin domain: ${profileUrl}`);
 
     // Set up response capture to get headers and body
     // Navigate to the page
@@ -86,22 +98,113 @@ export async function profilePage(
       const pageTitle = await page.title();
       const statusCode = response?.status();
       
-      return {
-        success: false,
-        storeUrl: normalizedUrl,
-        pagePath: cleanPath,
-        error:
-          `No profiling data found.\n\n` +
-          `Debug info:\n` +
+      let fallbackErrorDetails: string | undefined;
+
+      // Fallback: Try to find a draft theme to profile if the live theme failed (likely due to redirect)
+      console.error("No profiling data on primary URL. Attempting to profile a draft theme...");
+      
+      try {
+          // Fetch themes.json from Admin API
+          // We use the same page/session which should be authenticated
+          // CRITICAL: Use session.storeUrl (myshopify.com) not normalizedUrl (which might be custom domain)
+          let targetStoreUrl = session.storeUrl;
+          if (!targetStoreUrl.includes('.myshopify.com')) {
+              const primarySession = getPrimaryMyshopifySession();
+              if (primarySession) {
+                  targetStoreUrl = primarySession.storeUrl;
+                  console.error(`Switched to primary myshopify session: ${targetStoreUrl}`);
+                  
+                  // CRITICAL: Inject cookies from the primary session (admin.shopify.com cookies)
+                  // otherwise the request to admin/themes.json will fail (redirect to login)
+                  // because the browser currently only has cookies for the custom domain.
+                  if (primarySession.cookies && primarySession.cookies.length > 0) {
+                      const cookiesToSet = primarySession.cookies.map((c) => ({
+                        name: c.name,
+                        value: c.value,
+                        domain: c.domain,
+                        path: c.path,
+                        expires: c.expires,
+                        httpOnly: c.httpOnly,
+                        secure: c.secure,
+                      }));
+                      await page.setCookie(...cookiesToSet);
+                  }
+              } else {
+                  console.error("Warning: Could not find a myshopify.com session. Admin API might fail.");
+              }
+          }
+
+          const themesUrl = `https://${targetStoreUrl}/admin/themes.json`;
+          const themesResponse = await page.goto(themesUrl, { waitUntil: 'domcontentloaded' });
+          
+          if (themesResponse && themesResponse.ok()) {
+              // Extract handle from redirect URL (e.g., https://admin.shopify.com/store/onebedau/themes.json)
+              // This is crucial if we started with a custom domain and couldn't find the myshopify session key,
+              // but the request succeeded via redirects (due to valid cookies).
+              const finalThemesUrl = themesResponse.url();
+              let myshopifyDomain = targetStoreUrl;
+              const match = finalThemesUrl.match(/store\/([^\/]+)\/themes/);
+              if (match && match[1]) {
+                  const handle = match[1];
+                  myshopifyDomain = `${handle}.myshopify.com`;
+                  console.error(`Extracted myshopify domain from redirect: ${myshopifyDomain}`);
+              }
+
+              const content = await page.evaluate(() => document.body.innerText);
+              const data = JSON.parse(content);
+              const themes = data.themes || [];
+              
+              // Find a draft theme (unpublished) or "Dawn" as a fallback
+              const draftTheme = themes.find((t: any) => t.role === 'unpublished');
+              
+              if (draftTheme) {
+                  console.error(`Found draft theme: ${draftTheme.name} (${draftTheme.id}). Retrying profiling...`);
+                  
+                  // Construct preview URL for the draft theme on myshopify.com
+                  // Using the myshopify domain is likely required to ensure the profile_liquid flag works correctly
+                  // and avoids custom domain caching/stripping issues.
+                  const draftProfileUrl = `https://${myshopifyDomain}/?preview_theme_id=${draftTheme.id}&profile_liquid=true`;
+                  
+                  const retryResponse = await page.goto(draftProfileUrl, { waitUntil: 'networkidle2' });
+                  
+                  // Try extraction again
+                  const retryData = await extractProfilingData(page, retryResponse);
+                  
+                  if (retryData) {
+                       return {
+                          success: true,
+                          storeUrl: normalizedUrl,
+                          pagePath: cleanPath,
+                          profileUrl: draftProfileUrl,
+                          data: retryData,
+                          warning: `Profiled draft theme "${draftTheme.name}" because live theme profiling failed.`,
+                       };
+                  }
+              }
+          }
+      } catch (fallbackError) {
+          const errString = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          console.error("Draft theme fallback failed:", errString);
+          fallbackErrorDetails = errString;
+      }
+      
+      const debugInfo = `No profiling data found on live URL or fallback draft theme.\n` +
+          (fallbackErrorDetails ? `Fallback error: ${fallbackErrorDetails}\n` : '') +
+          `\nDebug info:\n` +
           `- Requested URL: ${profileUrl}\n` +
           `- Final URL: ${currentUrl}\n` +
           `- Page title: ${pageTitle}\n` +
           `- HTTP status: ${statusCode}\n\n` +
           `Possible causes:\n` +
           `- Session may have expired (try logging out and back in)\n` +
-          `- You may not have theme access permissions\n` +
-          `- The store may not support Liquid profiling\n` +
-          `- The login session may not include the right cookies`,
+          `- Custom domain redirection might be blocking admin cookies\n` +
+          `- The store may not support Liquid profiling`;
+
+      return {
+        success: false,
+        storeUrl: normalizedUrl,
+        pagePath: cleanPath,
+        error: debugInfo
       };
     }
 
@@ -111,6 +214,7 @@ export async function profilePage(
       pagePath: cleanPath,
       profileUrl,
       data: profilingData,
+      summary: analyzeProfile(profilingData),
     };
   } catch (error) {
     const errorMessage =
@@ -362,17 +466,24 @@ function parseServerTimingHeader(header: string): ProfilingData | null {
     const liquidEntries = entries.filter(
       (e) => e.name?.toLowerCase().includes("liquid") || e.description?.toLowerCase().includes("liquid")
     );
+    
+    // If no specific liquid entries found, return all entries as basic profiling
+    // This happens when detailed liquid profiling is not enabled or supported,
+    // but the server still returns high-level stats (render, db, processing).
+    const validEntries = liquidEntries.length > 0 ? liquidEntries : entries;
 
-    if (liquidEntries.length > 0) {
-      const totalTime = liquidEntries.reduce((sum, e) => sum + e.duration, 0);
+    if (validEntries.length > 0) {
+      const totalTime = validEntries.reduce((sum, e) => sum + e.duration, 0);
+      const isBasic = liquidEntries.length === 0;
+      
       return {
         timestamp: new Date().toISOString(),
         totalTime,
-        nodeCount: liquidEntries.length,
-        raw: { serverTiming: entries },
+        nodeCount: validEntries.length,
+        raw: { serverTiming: entries, type: isBasic ? "basic" : "liquid" },
         tree: {
-          name: "liquid",
-          children: liquidEntries.map((e) => ({
+          name: isBasic ? "root" : "liquid",
+          children: validEntries.map((e) => ({
             name: e.description || e.name,
             time: e.duration,
           })),
@@ -397,7 +508,7 @@ function normalizeProfilingData(rawData: any): ProfilingData {
       totalTime: rawData.totalTime || rawData.total_time || rawData.duration || rawData.time || 0,
       nodeCount: countNodes(rawData),
       raw: rawData,
-      tree: rawData,
+      tree: parseProfilingTree(rawData),
     };
   }
 
@@ -408,7 +519,7 @@ function normalizeProfilingData(rawData: any): ProfilingData {
       totalTime: profile.totalTime || profile.total_time || profile.duration || profile.time || 0,
       nodeCount: countNodes(profile),
       raw: rawData,
-      tree: profile,
+      tree: parseProfilingTree(profile),
     };
   }
 
@@ -418,7 +529,7 @@ function normalizeProfilingData(rawData: any): ProfilingData {
     totalTime: rawData.totalTime || rawData.total_time || rawData.duration || rawData.time || 0,
     nodeCount: typeof rawData === "object" ? Object.keys(rawData).length : 0,
     raw: rawData,
-    tree: rawData,
+    tree: parseProfilingTree(rawData),
   };
 }
 

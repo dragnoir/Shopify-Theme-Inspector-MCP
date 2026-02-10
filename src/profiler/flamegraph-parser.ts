@@ -13,6 +13,8 @@ export interface ProfileResult {
   profileUrl?: string;
   error?: string;
   data?: ProfilingData;
+  warning?: string;
+  summary?: ProfileSummary;
 }
 
 export interface ProfilingData {

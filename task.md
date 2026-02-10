@@ -22,7 +22,7 @@
 - [x] Parse profiling data from response headers/body
 - [x] Create basic profiling result interface
 - [x] Implement `profile_page` tool (MVP)
-- [ ] Test profiling on a sample store
+- [x] Test profiling on a sample store
 
 ## Phase 4: Flame Graph Data Processing
 
