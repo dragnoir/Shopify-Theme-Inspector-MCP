@@ -9,6 +9,7 @@ import { loginToShopify, checkAuthStatus, getStoreCookies } from "./auth/shopify
 import { getAuthenticatedStores, deleteSession, normalizeStoreUrl, getSession } from "./auth/session-manager.js";
 import { fetchThemeAsset, listThemeAssets } from "./api/theme-assets.js";
 import { analyzeLiquidCode } from "./profiler/static-analysis.js";
+import { logger } from "./utils/logger.js";
 
 // Profiler imports
 import { profilePage } from "./profiler/page-profiler.js";
@@ -190,6 +191,7 @@ server.tool(
     pagePath: z.string().optional().describe("The page path to profile (e.g., /products/example). Defaults to homepage '/'"),
   },
   async ({ storeUrl, pagePath }) => {
+    logger.info(`Tool 'profile_page' called`, { storeUrl, pagePath });
     // Check authentication first
     const authStatus = checkAuthStatus(storeUrl);
     
@@ -263,6 +265,7 @@ server.tool(
     pagePath: z.string().optional().describe("The page path to profile (e.g., /products/example). Defaults to homepage '/'"),
   },
   async ({ storeUrl, pagePath }) => {
+    logger.info(`Tool 'get_profile_summary' called`, { storeUrl, pagePath });
     const authStatus = checkAuthStatus(storeUrl);
     
     if (!authStatus.authenticated) {
@@ -330,6 +333,7 @@ server.tool(
     thresholdMs: z.number().optional().describe("Threshold in milliseconds. Defaults to 50ms."),
   },
   async ({ storeUrl, pagePath, thresholdMs = 50 }) => {
+    logger.info(`Tool 'find_slow_templates' called`, { storeUrl, pagePath, thresholdMs });
     const authStatus = checkAuthStatus(storeUrl);
     if (!authStatus.authenticated) {
        return {
@@ -386,6 +390,7 @@ server.tool(
     themeId: z.number().optional().describe("Theme ID to analyze. Defaults to the live (main) theme."),
   },
   async ({ storeUrl, fileName, themeId }) => {
+    logger.info(`Tool 'analyze_liquid_file' called`, { storeUrl, fileName, themeId });
     const session = getSession(normalizeStoreUrl(storeUrl));
     if (!session) {
        return {

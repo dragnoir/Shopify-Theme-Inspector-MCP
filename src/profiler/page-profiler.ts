@@ -8,6 +8,57 @@ import {
 } from "../auth/session-manager.js";
 import { ProfileResult, ProfilingData, parseProfilingTree } from "./flamegraph-parser.js";
 import { analyzeProfile } from "./profile-analyzer.js";
+import { logger } from "../utils/logger.js";
+
+async function discoverCanonicalDomain(storeUrl: string, cookies: any[]): Promise<string | null> {
+  const adminUrl = `https://${storeUrl}/admin`;
+  logger.debug(`Probing canonical domain via: ${adminUrl}`);
+  const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+  
+  try {
+    const response = await fetch(adminUrl, {
+      method: "GET", // Change to GET to be safer
+      redirect: "manual",
+      headers: {
+        "Cookie": cookieHeader,
+        "User-Agent": "Shopify-Theme-Inspector-MCP/0.1.0"
+      }
+    });
+
+    // Check location header
+    const location = response.headers.get("location");
+    const status = response.status;
+    
+    if (location) {
+      // Case 1: Redirects to admin.shopify.com/store/[handle]
+      if (location.includes("admin.shopify.com/store/")) {
+        const match = location.match(/admin\.shopify\.com\/store\/([^\/]+)/);
+        if (match && match[1]) {
+            return `${match[1]}.myshopify.com`;
+        }
+      }
+      
+      // Case 2: Redirects directly to [handle].myshopify.com
+      // e.g. https://onebedau.myshopify.com/admin
+      if (location.includes(".myshopify.com")) {
+        try {
+          const url = new URL(location);
+          return url.hostname;
+        } catch (e) {
+          // If location is partial or invalid, try fuzzy match
+          const match = location.match(/([a-zA-Z0-9-]+\.myshopify\.com)/);
+          if (match && match[1]) {
+            return match[1];
+          }
+        }
+      }
+    }
+    return null;
+  } catch (error) {
+    logger.error(`Error discovering canonical domain: ${error}`);
+    return null;
+  }
+}
 
 export interface ProfilePageOptions {
   storeUrl: string;
@@ -29,6 +80,8 @@ export async function profilePage(
 ): Promise<ProfileResult> {
   const { storeUrl, pagePath = "/", timeout = 30000 } = options;
   const normalizedUrl = normalizeStoreUrl(storeUrl);
+  
+  logger.info(`Profiling page: ${storeUrl}${pagePath}`);
 
   // Validate session
   const session = getSession(normalizedUrl);
@@ -72,7 +125,28 @@ export async function profilePage(
     // admin session cookies (koa.sid, _shopify_y, etc.) are valid.
     // If we use a custom domain (e.g., onebed.com.au), the browser won't send
     // the admin cookies, and Shopify won't return profiling data.
-    const baseUrl = `https://${normalizedUrl}`;
+    
+    // Check if we are using a custom domain
+    let effectiveStoreUrl = normalizedUrl;
+    if (!effectiveStoreUrl.includes(".myshopify.com")) {
+      const primarySession = getPrimaryMyshopifySession();
+      if (primarySession) {
+        effectiveStoreUrl = normalizeStoreUrl(primarySession.storeUrl);
+        logger.info(`Switched to canonical myshopify domain (session): ${effectiveStoreUrl}`);
+      } else {
+        // Try to discover it via admin redirect
+        logger.debug(`Attempting to discover canonical domain for ${effectiveStoreUrl}`);
+        const discovered = await discoverCanonicalDomain(effectiveStoreUrl, session.cookies);
+        if (discovered) {
+            effectiveStoreUrl = discovered;
+            logger.info(`Switched to canonical myshopify domain (discovered): ${effectiveStoreUrl}`);
+        } else {
+            logger.warn(`Could not discover canonical domain for ${effectiveStoreUrl}, using original.`);
+        }
+      }
+    }
+
+    const baseUrl = `https://${effectiveStoreUrl}`;
     const cleanPath = pagePath.startsWith("/") ? pagePath : `/${pagePath}`;
     const url = new URL(cleanPath, baseUrl);
     url.searchParams.set("profile_liquid", "true");
@@ -80,7 +154,7 @@ export async function profilePage(
     // but for now we profile the live theme.
 
     const profileUrl = url.toString();
-    console.error(`Profiling on admin domain: ${profileUrl}`);
+    logger.info(`Profiling on admin domain: ${profileUrl}`);
 
     // Set up response capture to get headers and body
     // Navigate to the page
