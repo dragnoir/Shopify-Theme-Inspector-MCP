@@ -241,6 +241,7 @@ server.tool(
             nodeCount: result.data.nodeCount,
             timestamp: result.data.timestamp,
             rawData: result.data.raw,
+            summary: result.summary,
           }, null, 2),
         },
       ],
@@ -296,7 +297,7 @@ server.tool(
       };
     }
 
-    const summary = generateSummary(result.data);
+    const summary = result.summary;
 
     return {
       content: [
