@@ -316,6 +316,60 @@ server.tool(
 );
 
 // ============================================================================
+// TOOL: find_slow_templates
+// Identify templates that exceed a performance threshold
+// ============================================================================
+server.tool(
+  "find_slow_templates",
+  "Identify Liquid templates and sections that are taking longer than a specified threshold to render.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePath: z.string().optional().describe("The page path to profile"),
+    thresholdMs: z.number().optional().describe("Threshold in milliseconds. Defaults to 50ms."),
+  },
+  async ({ storeUrl, pagePath, thresholdMs = 50 }) => {
+    const authStatus = checkAuthStatus(storeUrl);
+    if (!authStatus.authenticated) {
+       return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, message: "Not authenticated" }, null, 2) }]
+       };
+    }
+
+    const result = await profilePage({ storeUrl, pagePath: pagePath || "/" });
+    
+    if (!result.success || !result.data || !result.summary) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ success: false, error: result.error || "No data" }, null, 2) }]
+      };
+    }
+
+    const breakdown = result.summary.templateBreakdown || [];
+    const slowTemplates = breakdown.filter(t => t.totalTime > thresholdMs);
+
+    // If no templates found, check if it was a basic profile
+    const isBasic = result.data.raw?.type === "basic";
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            totalRenderTime: result.summary.totalRenderTime,
+            thresholdMs,
+            slowTemplatesCount: slowTemplates.length,
+            slowTemplates,
+            note: isBasic 
+              ? "No detailed Liquid template data available (Basic Profiling Mode). This usually happens on live themes with caching or custom domains. Try profiling a draft theme on the myshopify.com domain for detailed Liquid stats." 
+              : undefined
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
 // Start the server
 // ============================================================================
 async function main() {
