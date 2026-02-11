@@ -71,12 +71,12 @@
 
 ## Phase 8: Advanced Features & Polish ⬅️ NEXT
 
-### 8a: Improve profiling output for AI consumption
+### 8a: Improve profiling output for AI consumption ✅ (v0.3.0)
 
-- [ ] Add performance recommendations engine (auto-detect anti-patterns like `all_products[]`)
-- [ ] Add severity ratings to slow template findings (critical/warning/info)
-- [ ] Create a `get_bottlenecks` tool that combines profiling + static analysis
-- [ ] Summarize optimization suggestions based on known Shopify anti-patterns
+- [x] Add performance recommendations engine (auto-detect anti-patterns like `all_products[]`)
+- [x] Add severity ratings to slow template findings (critical/warning/info)
+- [x] Create a `get_bottlenecks` tool that combines profiling + auto-recommendations
+- [x] Summarize optimization suggestions based on known Shopify anti-patterns
 
 ### 8b: Token management improvements
 

@@ -29,11 +29,12 @@ import { logger } from "./utils/logger.js";
 // Profiler imports (now uses OAuth2 token-based approach)
 import { profilePage } from "./profiler/page-profiler.js";
 import { generateSummary } from "./profiler/flamegraph-parser.js";
+import { generateRecommendations } from "./profiler/recommendations.js";
 
 // Create the MCP server instance
 const server = new McpServer({
   name: "shopify-theme-inspector",
-  version: "0.2.0",
+  version: "0.3.0",
 });
 
 // ============================================================================
@@ -54,7 +55,7 @@ server.tool(
           text: JSON.stringify({
             status: "healthy",
             server: "shopify-theme-inspector",
-            version: "0.2.0",
+            version: "0.3.0",
             timestamp: new Date().toISOString(),
             authMethod: "OAuth2 (same as Chrome extension)",
             authenticatedStores: oauthStores.length,
@@ -68,6 +69,7 @@ server.tool(
               "profile_page (full speedscope flame graph!)",
               "get_profile_summary",
               "find_slow_templates",
+              "get_bottlenecks (NEW: auto-detect anti-patterns)",
               "analyze_liquid_file",
             ],
           }, null, 2),
@@ -308,6 +310,9 @@ server.tool(
       };
     }
 
+    // Generate auto-recommendations
+    const recommendations = generateRecommendations(result.data, result.summary);
+
     return {
       content: [
         {
@@ -319,9 +324,18 @@ server.tool(
             profileUrl: result.profileUrl,
             totalTime: result.data.totalTime,
             nodeCount: result.data.nodeCount,
+            performanceRating: recommendations.overallRating,
             timestamp: result.data.timestamp,
             warning: result.warning,
             summary: result.summary,
+            recommendations: {
+              count: recommendations.recommendations.length,
+              critical: recommendations.summary.critical,
+              warning: recommendations.summary.warning,
+              info: recommendations.summary.info,
+              estimatedSavingsMs: recommendations.summary.estimatedSavingsMs,
+              items: recommendations.recommendations.slice(0, 5),
+            },
             rawData: result.data.raw,
           }, null, 2),
         },
@@ -363,6 +377,9 @@ server.tool(
       };
     }
 
+    // Generate auto-recommendations
+    const recommendations = generateRecommendations(result.data, result.summary);
+
     return {
       content: [
         {
@@ -371,8 +388,17 @@ server.tool(
             success: true,
             storeUrl: result.storeUrl,
             pagePath: result.pagePath,
+            performanceRating: recommendations.overallRating,
             warning: result.warning,
             summary: result.summary,
+            recommendations: {
+              count: recommendations.recommendations.length,
+              critical: recommendations.summary.critical,
+              warning: recommendations.summary.warning,
+              info: recommendations.summary.info,
+              estimatedSavingsMs: recommendations.summary.estimatedSavingsMs,
+              items: recommendations.recommendations,
+            },
           }, null, 2),
         },
       ],
@@ -422,6 +448,66 @@ server.tool(
             note: isBasic 
               ? "Got basic profiling data only. Try 'logout' then 'login' again to refresh your OAuth2 token." 
               : undefined
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
+// TOOL: get_bottlenecks
+// Comprehensive bottleneck analysis with auto-detected anti-patterns
+// ============================================================================
+server.tool(
+  "get_bottlenecks",
+  "Profile a page and automatically detect performance anti-patterns. Returns prioritized recommendations with severity ratings (critical/warning/info), specific file/line locations, measured impact, and concrete fix suggestions. This is the BEST tool for identifying what to optimize.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePath: z.string().optional().describe("The page path to analyze (defaults to '/')"),
+  },
+  async ({ storeUrl, pagePath }) => {
+    logger.info(`Tool 'get_bottlenecks' called`, { storeUrl, pagePath });
+
+    const result = await profilePage({ storeUrl, pagePath: pagePath || "/" });
+
+    if (!result.success || !result.data) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: result.error || "Failed to profile page. Make sure you are logged in (use 'login' tool).",
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const report = generateRecommendations(result.data, result.summary);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            storeUrl: result.storeUrl,
+            pagePath: result.pagePath,
+            totalRenderTimeMs: report.totalRenderTimeMs,
+            overallRating: report.overallRating,
+            summary: {
+              critical: report.summary.critical,
+              warning: report.summary.warning,
+              info: report.summary.info,
+              estimatedSavingsMs: report.summary.estimatedSavingsMs,
+              message: report.recommendations.length === 0
+                ? "No performance issues detected. The page renders efficiently."
+                : `Found ${report.recommendations.length} recommendation(s): ` +
+                  `${report.summary.critical} critical, ${report.summary.warning} warnings, ${report.summary.info} info.`,
+            },
+            recommendations: report.recommendations,
           }, null, 2),
         },
       ],
@@ -510,8 +596,9 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Shopify Theme Inspector MCP server v0.2.0 running on stdio");
+  console.error("Shopify Theme Inspector MCP server v0.3.0 running on stdio");
   console.error("Auth method: OAuth2 via Shopify Identity (same as Chrome extension)");
+  console.error("New in v0.3.0: get_bottlenecks tool with auto-detected anti-patterns");
 }
 
 main().catch((error) => {
