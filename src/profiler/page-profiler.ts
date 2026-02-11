@@ -16,7 +16,7 @@
  * data in speedscope format.
  */
 
-import { getProfilingAccessToken, getOAuthTokens } from "../auth/shopify-identity-oauth.js";
+import { getProfilingAccessToken, getOAuthTokens, getProfilingTokenStatus } from "../auth/shopify-identity-oauth.js";
 import { ProfileResult, ProfilingData, ProfileNode, parseProfilingTree } from "./flamegraph-parser.js";
 import { analyzeProfile } from "./profile-analyzer.js";
 import { logger } from "../utils/logger.js";
@@ -91,11 +91,16 @@ export async function profilePage(options: ProfilePageOptions): Promise<ProfileR
     // Also try with the raw storeUrl in case it was stored differently
     const altToken = await getProfilingAccessToken(storeUrl);
     if (!altToken) {
+      // Provide detailed error based on token status
+      const status = getProfilingTokenStatus(normalizedUrl);
+      const errorMsg = status.canRefresh
+        ? "Token expired and auto-refresh failed. Use the 'login' tool to re-authenticate with Shopify Identity."
+        : status.message;
       return {
         success: false,
         storeUrl: normalizedUrl,
         pagePath,
-        error: "Not authenticated. Use the 'login' tool first to authenticate with Shopify Identity.",
+        error: errorMsg,
       };
     }
     return await profileWithToken(normalizedUrl, pagePath, altToken, timeout);

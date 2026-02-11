@@ -11,6 +11,8 @@ import {
   deleteOAuthTokens,
   getOAuthenticatedStores,
   getProfilingAccessToken,
+  getTokenStatus,
+  getProfilingTokenStatus,
 } from "./auth/shopify-identity-oauth.js";
 
 // Legacy cookie-based auth - still used for Admin API (theme assets)
@@ -224,7 +226,8 @@ server.tool(
 
     if (storeUrl) {
       const normalizedUrl = normalizeStoreUrl(storeUrl);
-      const oauthTokens = getOAuthTokens(normalizedUrl) || getOAuthTokens(storeUrl);
+      const tokenStatus = getTokenStatus(normalizedUrl);
+      const profilingStatus = getProfilingTokenStatus(normalizedUrl);
       const legacySession = getSession(normalizedUrl);
       
       return {
@@ -233,10 +236,19 @@ server.tool(
             type: "text",
             text: JSON.stringify({
               storeUrl: normalizedUrl,
-              oauth2: oauthTokens ? {
-                authenticated: true,
-                expiresAt: oauthTokens.expiresAt,
-                note: "Can use profile_page, get_profile_summary, find_slow_templates",
+              oauth2: tokenStatus.hasTokens ? {
+                authenticated: tokenStatus.subjectTokenValid,
+                tokenValid: tokenStatus.subjectTokenValid,
+                expiresAt: tokenStatus.expiresAt,
+                timeRemaining: tokenStatus.timeRemainingHuman || (tokenStatus.canAutoRefresh ? "expired (auto-refresh available)" : "expired"),
+                hasRefreshToken: tokenStatus.hasRefreshToken,
+                canAutoRefresh: tokenStatus.canAutoRefresh,
+                profilingStatus: profilingStatus.message,
+                note: tokenStatus.subjectTokenValid 
+                  ? "Can use profile_page, get_profile_summary, find_slow_templates, get_bottlenecks"
+                  : tokenStatus.canAutoRefresh
+                    ? "Token expired but will auto-refresh on next profiling request"
+                    : "Token expired. Use 'login' to re-authenticate.",
               } : {
                 authenticated: false,
                 note: "Use 'login' tool to authenticate with OAuth2 for profiling",

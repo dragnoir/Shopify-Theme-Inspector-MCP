@@ -78,11 +78,19 @@
 - [x] Create a `get_bottlenecks` tool that combines profiling + auto-recommendations
 - [x] Summarize optimization suggestions based on known Shopify anti-patterns
 
-### 8b: Token management improvements
+### 8b: Token management improvements ✅ (v0.3.0)
 
-- [ ] Implement automatic token refresh using the refresh token
-- [ ] Add token expiry checking before profiling requests
-- [ ] Graceful re-authentication prompt when tokens expire
+- [x] Implement automatic token refresh using the refresh token
+  - Fixed critical bug: `getOAuthTokens()` was discarding expired tokens, preventing refresh
+  - Added `getOAuthTokensRaw()` for internal access to expired tokens (to read refresh_token)
+  - `getProfilingAccessToken()` now reliably auto-refreshes and preserves refresh tokens
+  - Revoked refresh tokens (4xx errors) trigger automatic cleanup of stale tokens
+- [x] Add token expiry checking before profiling requests
+  - Added `getTokenStatus()` — detailed diagnostics: validity, time remaining, refresh capability
+  - Added `getProfilingTokenStatus()` — informational status for error messaging
+  - `get_auth_status` tool now shows `timeRemaining`, `canAutoRefresh`, and `profilingStatus`
+- [x] Graceful re-authentication prompt when tokens expire
+  - Context-aware error messages in `page-profiler.ts`: distinguishes "not authenticated", "expired + refresh failed", and "expired + no refresh token"
 
 ### 8c: Multi-page & comparison features
 

@@ -123,16 +123,76 @@ function saveTokenStore(store: TokenStore): void {
   fs.writeFileSync(TOKEN_FILE, JSON.stringify(store, null, 2));
 }
 
+/**
+ * Get valid (non-expired) OAuth tokens for a store.
+ * Returns null if no tokens exist or if tokens are expired with no refresh option.
+ */
 export function getOAuthTokens(storeUrl: string): OAuthTokens | null {
-  const store = loadTokenStore();
-  const key = normalizeForKey(storeUrl);
-  const tokens = store.tokens[key];
+  const tokens = getOAuthTokensRaw(storeUrl);
   if (!tokens) return null;
-  // Check expiry
-  if (new Date(tokens.expiresAt) < new Date()) return null;
-  // Check if subject token is still valid
+  // Only return if subject token is still valid
   if (isTokenExpired(tokens.subjectToken)) return null;
   return tokens;
+}
+
+/**
+ * Get raw OAuth tokens for a store, even if expired.
+ * Used internally to access the refresh token for auto-refresh.
+ */
+export function getOAuthTokensRaw(storeUrl: string): OAuthTokens | null {
+  const store = loadTokenStore();
+  const key = normalizeForKey(storeUrl);
+  return store.tokens[key] || null;
+}
+
+export interface TokenStatus {
+  hasTokens: boolean;
+  subjectTokenValid: boolean;
+  clientTokenValid: boolean;
+  hasRefreshToken: boolean;
+  canAutoRefresh: boolean;
+  expiresAt?: string;
+  timeRemainingMs?: number;
+  timeRemainingHuman?: string;
+}
+
+/**
+ * Get detailed token status for a store — useful for diagnostics.
+ */
+export function getTokenStatus(storeUrl: string): TokenStatus {
+  const tokens = getOAuthTokensRaw(storeUrl);
+  if (!tokens) {
+    return {
+      hasTokens: false,
+      subjectTokenValid: false,
+      clientTokenValid: false,
+      hasRefreshToken: false,
+      canAutoRefresh: false,
+    };
+  }
+
+  const subjectValid = !isTokenExpired(tokens.subjectToken);
+  const clientValid = !isTokenExpired(tokens.clientToken);
+  const hasRefresh = !!tokens.clientToken.refreshToken;
+  const canRefresh = hasRefresh; // Refresh tokens don't expire in Shopify Identity
+
+  let timeRemainingMs: number | undefined;
+  let timeRemainingHuman: string | undefined;
+  if (subjectValid) {
+    timeRemainingMs = (tokens.subjectToken.accessTokenDate + tokens.subjectToken.expiresIn) - Date.now();
+    timeRemainingHuman = formatDuration(timeRemainingMs);
+  }
+
+  return {
+    hasTokens: true,
+    subjectTokenValid: subjectValid,
+    clientTokenValid: clientValid,
+    hasRefreshToken: hasRefresh,
+    canAutoRefresh: canRefresh,
+    expiresAt: tokens.expiresAt,
+    timeRemainingMs,
+    timeRemainingHuman,
+  };
 }
 
 export function saveOAuthTokens(tokens: OAuthTokens): void {
@@ -165,6 +225,16 @@ function normalizeForKey(url: string): string {
 function isTokenExpired(token: ClientAccessToken | SubjectAccessToken): boolean {
   const safetyBuffer = 60000; // 1 minute buffer
   return Date.now() >= token.accessTokenDate + token.expiresIn - safetyBuffer;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 0) return "expired";
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  return `${seconds}s`;
 }
 
 // ============================================================================
@@ -591,37 +661,101 @@ async function refreshAndExchange(
  *   - Accept: application/vnd.speedscope+json
  *   - Authorization: Bearer <token>
  * 
- * Returns null if not authenticated or token expired.
- * Will try to auto-refresh if possible.
+ * Automatically refreshes expired tokens using the refresh token.
+ * Returns null only if no tokens exist or refresh fails.
  */
 export async function getProfilingAccessToken(storeUrl: string): Promise<string | null> {
   const key = normalizeForKey(storeUrl);
-  let tokens = getOAuthTokens(key);
+  
+  // Use getOAuthTokensRaw to access tokens even if expired (for refresh)
+  let tokens = getOAuthTokensRaw(key);
 
   if (!tokens) return null;
 
-  // If subject token is expired but client token has a refresh token, try refresh
-  if (isTokenExpired(tokens.subjectToken)) {
-    if (tokens.clientToken.refreshToken) {
-      try {
-        logger.info("Subject token expired, attempting refresh...");
-        const refreshed = await refreshAndExchange(tokens.clientToken.refreshToken);
-        tokens = {
-          ...refreshed,
-          storeUrl: key,
-          createdAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + refreshed.subjectToken.expiresIn).toISOString(),
-        };
-        saveOAuthTokens(tokens);
-        logger.info("Token refreshed successfully.");
-      } catch (e) {
-        logger.error(`Token refresh failed: ${e}`);
-        return null;
-      }
-    } else {
-      return null;
-    }
+  // If subject token is still valid, return it directly
+  if (!isTokenExpired(tokens.subjectToken)) {
+    return tokens.subjectToken.accessToken;
   }
 
-  return tokens.subjectToken.accessToken;
+  // Subject token expired — try to refresh
+  logger.info("Subject token expired, checking refresh capability...");
+
+  if (!tokens.clientToken.refreshToken) {
+    logger.warn("No refresh token available. User must re-authenticate.");
+    return null;
+  }
+
+  try {
+    logger.info("Refreshing token using refresh_token grant...");
+    const refreshed = await refreshAndExchange(tokens.clientToken.refreshToken);
+    
+    // Preserve the refresh token if the response didn't include a new one
+    if (!refreshed.clientToken.refreshToken && tokens.clientToken.refreshToken) {
+      refreshed.clientToken.refreshToken = tokens.clientToken.refreshToken;
+    }
+
+    tokens = {
+      ...refreshed,
+      storeUrl: key,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + refreshed.subjectToken.expiresIn).toISOString(),
+    };
+    saveOAuthTokens(tokens);
+    logger.info(`Token refreshed successfully. Valid for ${formatDuration(refreshed.subjectToken.expiresIn)}.`);
+    return tokens.subjectToken.accessToken;
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    logger.error(`Token refresh failed: ${errorMsg}`);
+    
+    // If refresh fails with a 4xx error, the refresh token is likely revoked
+    if (errorMsg.includes("400") || errorMsg.includes("401") || errorMsg.includes("403")) {
+      logger.warn("Refresh token appears to be revoked. Cleaning up expired tokens.");
+      deleteOAuthTokens(key);
+    }
+    return null;
+  }
+}
+
+/**
+ * Check if profiling tokens are available and return a status message.
+ * Unlike getProfilingAccessToken, this does NOT attempt refresh — it's informational only.
+ */
+export function getProfilingTokenStatus(storeUrl: string): {
+  available: boolean;
+  message: string;
+  canRefresh: boolean;
+} {
+  const key = normalizeForKey(storeUrl);
+  const tokens = getOAuthTokensRaw(key);
+
+  if (!tokens) {
+    return {
+      available: false,
+      message: "Not authenticated. Use the 'login' tool to authenticate.",
+      canRefresh: false,
+    };
+  }
+
+  if (!isTokenExpired(tokens.subjectToken)) {
+    const remaining = (tokens.subjectToken.accessTokenDate + tokens.subjectToken.expiresIn) - Date.now();
+    return {
+      available: true,
+      message: `Token valid (${formatDuration(remaining)} remaining).`,
+      canRefresh: !!tokens.clientToken.refreshToken,
+    };
+  }
+
+  if (tokens.clientToken.refreshToken) {
+    return {
+      available: false,
+      message: "Token expired but auto-refresh is available. Next profiling request will auto-refresh.",
+      canRefresh: true,
+    };
+  }
+
+  return {
+    available: false,
+    message: "Token expired and no refresh token available. Use 'login' to re-authenticate.",
+    canRefresh: false,
+  };
 }
