@@ -115,10 +115,22 @@
   - Full report with summary, severity badges (🔴🟡🔵), recommendation details, template tables, and slow node tables
   - Can be saved to `.md` file or returned inline for direct use
 
-### 8e: README & publishing
+### 8e: README & publishing ✅ (v0.3.0)
 
-- [ ] Update README.md with full setup instructions
-- [ ] Add tool usage examples with sample outputs
-- [ ] Create configuration guide (MCP client setup, Claude Desktop, etc.)
-- [ ] Add troubleshooting section
-- [ ] Publish to npm (optional)
+- [x] Update README.md with full setup instructions
+  - Quick Setup config block matching chrome-devtools-mcp pattern
+  - Config file locations for Claude Desktop, Cursor, Windsurf, VS Code
+  - Alternative "run from source" instructions
+- [x] Add tool usage examples with sample outputs
+  - Natural language prompt examples for all key tools
+  - Sample recommendation output, trend output, export output
+- [x] Create configuration guide (MCP client setup, Claude Desktop, etc.)
+  - Table with per-agent config paths
+  - Both npx and source-based setup documented
+- [x] Add troubleshooting section
+  - Auth errors, token expiry, Puppeteer issues, empty data, port conflicts
+- [x] Prepare for npm publish
+  - `package.json`: `files` whitelist, `prepublishOnly` auto-build, `repository`/`homepage`/`bugs`, expanded keywords
+  - `.npmignore`: excludes source, debug files, dev docs
+  - Verified with `npm pack --dry-run`: 63 KB, 54 files, clean
+  - Ready to publish with `npm publish`

@@ -1,6 +1,33 @@
+# Dependencies
 node_modules/
+
+# Build output (rebuilt on install)
 dist/
+
+# Environment & secrets
 .env
+.env.*
+
+# Logs
 *.log
+debug.log
+
+# Debug scripts & artifacts
+debug-*.mjs
+debug-*.ts
+debug_*.png
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Session data
 .session/
+
+# Dev docs (not needed in repo for publishing)
+implementation_plan.md
+debugging-retrospective.md

@@ -1,0 +1,35 @@
+# Source code (TypeScript) — only dist/ ships
+src/
+
+# Config
+tsconfig.json
+.gitignore
+
+# Dev docs
+ROOT-CAUSE-ANALYSIS.md
+TESTING.md
+task.md
+implementation_plan.md
+debugging-retrospective.md
+
+# Debug files
+debug-*.mjs
+debug-*.ts
+debug_*.png
+debug.log
+*.log
+
+# Dev tooling
+.git/
+.github/
+.vscode/
+.idea/
+.session/
+.env
+.env.*
+
+# Tests
+tests/
+__tests__/
+*.test.ts
+*.spec.ts

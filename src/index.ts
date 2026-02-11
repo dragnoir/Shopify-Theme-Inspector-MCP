@@ -995,8 +995,8 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Shopify Theme Inspector MCP server v0.3.0 running on stdio");
-  console.error("Auth method: OAuth2 via Shopify Identity (same as Chrome extension)");
-  console.error("New in v0.3.0: get_bottlenecks tool with auto-detected anti-patterns");
+  console.error("Auth: OAuth2 via Shopify Identity (auto-refresh enabled)");
+  console.error("Tools: profile_page, get_bottlenecks, compare_pages, batch_profile, export_profile, get_profile_history");
 }
 
 main().catch((error) => {

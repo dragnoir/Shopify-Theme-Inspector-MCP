@@ -1,166 +1,232 @@
 # Shopify Theme Inspector MCP
 
-An MCP (Model Context Protocol) server that enables AI agents to profile and debug Liquid templates on Shopify stores. Uses the **same OAuth2 authentication and profiling mechanism** as the official [Shopify Theme Inspector Chrome Extension](https://github.com/Shopify/shopify-theme-inspector) to retrieve **full flame graph data** with per-template, per-line timing.
+An MCP (Model Context Protocol) server that gives AI agents deep performance profiling and optimization capabilities for Shopify Liquid themes. Uses the same OAuth2 authentication as the official [Shopify Theme Inspector Chrome extension](https://chrome.google.com/webstore/detail/shopify-theme-inspector/fndnankcflemoafdeboboehphmiijkgp).
 
-## Features
+## Quick Setup
 
-- 🔥 **Full Flame Graph Data** — 3,000+ profiling nodes with file paths and line numbers (not just basic Server-Timing)
-- 🔐 **OAuth2 Authentication** — Same OAuth2 PKCE flow as the Chrome extension (via Shopify Identity)
-- 📊 **Performance Summaries** — Auto-generated breakdown of slow templates, bottleneck sections, and render counts
-- 🔍 **Static Analysis** — Detect Liquid anti-patterns directly in theme code via the Admin API
-- 🤖 **AI-Ready** — Designed for seamless integration with AI coding assistants (Claude, Gemini, etc.)
+Add this to your AI agent's MCP configuration:
 
-## Quick Start
+```json
+{
+  "mcpServers": {
+    "shopify-theme-inspector": {
+      "command": "npx",
+      "args": ["-y", "shopify-theme-inspector-mcp@latest"]
+    }
+  }
+}
+```
 
-### Installation
+### Where to add this config
+
+| AI Agent              | Config File Location                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Claude Desktop**    | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) |
+| **Cursor**            | Settings → MCP Servers → Add Server                                                                                                  |
+| **Windsurf**          | `~/.codeium/windsurf/mcp_config.json`                                                                                                |
+| **VS Code + Copilot** | `.vscode/mcp.json` in your workspace                                                                                                 |
+
+### Alternative: Run from source
 
 ```bash
+git clone https://github.com/dragnoir/Shopify-Theme-Inspector-MCP.git
+cd Shopify-Theme-Inspector-MCP
 npm install
 npm run build
 ```
 
-### Claude Desktop Configuration
-
-Add to your Claude Desktop config (`claude_desktop_config.json`):
+Then configure your AI agent to use:
 
 ```json
 {
   "mcpServers": {
     "shopify-theme-inspector": {
       "command": "node",
-      "args": ["path/to/shopify-theme-inspector-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/Shopify-Theme-Inspector-MCP/dist/index.js"]
     }
   }
 }
 ```
 
-### First Use
+## Authentication
 
-1. **Authenticate:** Ask Claude to `login` with your store URL
-2. **Profile:** Ask Claude to `profile_page` on any page
-3. **Analyze:** Ask Claude to `find_slow_templates` or `get_profile_summary`
+Before profiling, you must authenticate with Shopify. Just ask your AI agent:
+
+> "Log in to my Shopify store at mystore.myshopify.com"
+
+This triggers the `login` tool which opens a browser window for Shopify Identity OAuth2 login. After you sign in, the token is stored locally at `~/.shopify-theme-inspector/oauth-tokens.json` and **auto-refreshes** when it expires — you typically only need to log in once.
 
 ## Available Tools
 
-| Tool                  | Auth   | Description                                                                    |
-| --------------------- | ------ | ------------------------------------------------------------------------------ |
-| `health_check`        | None   | Verify the MCP server is running and check auth status                         |
-| `login`               | —      | OAuth2 login via Shopify Identity (opens browser). Required for profiling.     |
-| `login_legacy`        | —      | Legacy cookie-based login (opens browser). Required for `analyze_liquid_file`. |
-| `logout`              | —      | Remove all saved authentication for a store                                    |
-| `get_auth_status`     | None   | Check authentication status for all stores                                     |
-| `profile_page`        | OAuth2 | Profile a store page — returns full speedscope flame graph data                |
-| `get_profile_summary` | OAuth2 | Profile with human-readable performance summary and template breakdown         |
-| `find_slow_templates` | OAuth2 | Identify templates exceeding a duration threshold (default: 50ms)              |
-| `analyze_liquid_file` | Legacy | Statically analyze Liquid files for performance anti-patterns                  |
+### 🔐 Authentication
+
+| Tool              | Description                                                       |
+| ----------------- | ----------------------------------------------------------------- |
+| `login`           | Authenticate via Shopify Identity OAuth2 (opens browser)          |
+| `login_legacy`    | Cookie-based auth for Admin API access (theme file analysis)      |
+| `logout`          | Remove stored authentication for a store                          |
+| `get_auth_status` | Check token validity, time remaining, and auto-refresh capability |
+| `health_check`    | Verify server is running and show all capabilities                |
+
+### 📊 Profiling
+
+| Tool                  | Description                                                                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `profile_page`        | Profile a page and get full speedscope flame graph data with auto-recommendations                              |
+| `get_profile_summary` | Get a concise summary of render time, template breakdown, and recommendations                                  |
+| `find_slow_templates` | Find templates exceeding a render time threshold                                                               |
+| `get_bottlenecks`     | **Best tool for optimization** — auto-detects anti-patterns with severity ratings and concrete fix suggestions |
+
+### 🔄 Comparison & Batch
+
+| Tool            | Description                                                                             |
+| --------------- | --------------------------------------------------------------------------------------- |
+| `compare_pages` | Profile two pages side-by-side — shows delta, template diff, and unique recommendations |
+| `batch_profile` | Profile up to 10 pages in parallel — sorted by slowest, with per-page issues            |
+
+### 📈 History & Trends
+
+| Tool                  | Description                                                                 |
+| --------------------- | --------------------------------------------------------------------------- |
+| `get_profile_history` | View how render times change over time — trend direction, averages, min/max |
+
+### 📤 Export
+
+| Tool             | Description                                                                                                                                                     |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `export_profile` | Export profiling data as **speedscope JSON** (for [speedscope.app](https://www.speedscope.app)), **CSV** (for spreadsheets), or **Markdown** (shareable report) |
+
+### 🔍 Static Analysis
+
+| Tool                  | Description                                                                                    |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `analyze_liquid_file` | Statically analyze a specific Liquid file for performance anti-patterns (requires legacy auth) |
+
+## Usage Examples
+
+### Profile a page and get optimization suggestions
+
+> "Profile the homepage of mystore.myshopify.com and tell me what's slow"
+
+The AI will call `get_bottlenecks` and return something like:
+
+```
+Overall Rating: 🟡 Moderate (287ms)
+Found 4 recommendations: 1 critical, 2 warnings, 1 info
+
+🔴 CRITICAL: content_for_header string manipulation
+   File: layout/theme.liquid:15
+   Impact: 12.3ms (4.3%)
+   Fix: Remove character-level iteration. Use JavaScript-based
+   script loading instead of Liquid string manipulation.
+
+🟡 WARNING: Third-party app: seoant-speedup
+   Impact: 8.1ms (2.8%)
+   Fix: Evaluate if this app is essential. Consider disabling
+   the app embed or contacting the developer.
+```
+
+### Compare two pages
+
+> "Compare the homepage vs the /collections/all page on mystore.myshopify.com"
+
+### Batch profile your key pages
+
+> "Profile these pages on mystore.myshopify.com: /, /collections/all, /products/my-product, /cart"
+
+### Track optimization impact
+
+> "Show me the profiling history for the homepage of mystore.myshopify.com"
+
+Returns trend data:
+
+```
+Trend: improving ↓
+Latest: 245ms (was 312ms)
+Delta: -67ms (-21.5%)
+Average: 278ms over 5 data points
+```
+
+### Export a Markdown report
+
+> "Export a markdown performance report for mystore.myshopify.com to ./report.md"
+
+Generates a formatted report with tables, severity badges, and fix suggestions.
+
+## Auto-Detected Anti-Patterns
+
+The recommendations engine detects these known Shopify Liquid performance issues:
+
+| Anti-Pattern                             | Category              | Why It's Slow                               |
+| ---------------------------------------- | --------------------- | ------------------------------------------- |
+| `all_products[handle]`                   | Expensive Lookup      | Full product lookup by handle on every call |
+| `content_for_header` string manipulation | String Manipulation   | 50KB+ string, O(n) per operation            |
+| `for` loop over `content_for_header`     | String Manipulation   | Character-by-character iteration            |
+| Cart drawer on every page                | Unnecessary Rendering | Renders even when cart is empty             |
+| `\| money` filter in loops               | Expensive Filter      | Cumulative cost in product loops            |
+| `\| image_url` heavy usage               | Expensive Filter      | Multiple CDN URL transformations            |
+| Large `{% schema %}` blocks              | Large Schema          | Parsed on every page load                   |
+| Excessive template renders (100+)        | Excessive Rendering   | Nested loops or deep block iteration        |
+| Heavy third-party app blocks             | Third-Party Apps      | Server-side Liquid on every page            |
+| Templates taking >15% of total time      | Heavy Templates       | Disproportionate single-template cost       |
 
 ## How It Works
 
-### Authentication
+This MCP server replicates the exact authentication and data retrieval mechanism used by the [Shopify Theme Inspector Chrome extension](https://chrome.google.com/webstore/detail/shopify-theme-inspector/fndnankcflemoafdeboboehphmiijkgp):
 
-The MCP uses **OAuth2 PKCE** via Shopify Identity (`accounts.shopify.com`), replicating the exact flow of the Chrome Theme Inspector extension:
+1. **OAuth2 PKCE** flow with `accounts.shopify.com` using the Chrome extension's client ID
+2. **Token exchange** for a `storefront-renderer-devtools` subject token
+3. **Speedscope request**: fetches `Accept: application/vnd.speedscope+json` with `Authorization: Bearer <token>`
+4. Shopify returns detailed **flame graph profiling data** instead of the HTML page
 
-1. Opens a Chromium browser window for Shopify login
-2. Captures the OAuth authorization code via redirect interception
-3. Exchanges the code for a client access token
-4. Performs **RFC 8693 token exchange** to obtain a storefront-renderer devtools subject token
-5. Stores the token locally (`~/.shopify-theme-inspector/oauth-tokens.json`)
+The key insight is that Shopify's profiling is server-side — the token tells Shopify to measure and return Liquid render performance data in speedscope format.
 
-### Profiling
+## Data Storage
 
-With the subject token, profiling is a single HTTP request:
+All data is stored locally on your machine:
 
-```http
-GET /page-path HTTP/1.1
-Host: storefront-url.com
-Accept: application/vnd.speedscope+json
-Authorization: Bearer <subject_access_token>
-```
+| Data            | Location                                       | Purpose                                 |
+| --------------- | ---------------------------------------------- | --------------------------------------- |
+| OAuth tokens    | `~/.shopify-theme-inspector/oauth-tokens.json` | Authentication (auto-refreshed)         |
+| Profile history | `~/.shopify-theme-inspector/history/`          | Trend tracking (auto-pruned to 50/page) |
 
-Shopify responds with full profiling data in [speedscope format](https://www.speedscope.app/file-format-schema.json) — the same data the Chrome extension visualizes as a flame graph.
+No data is sent to any third-party service.
 
-### What You Get
+## Requirements
 
-The profiling data includes:
+- **Node.js** ≥ 18.0.0
+- **Chromium/Chrome** (for the initial OAuth2 login via Puppeteer)
+- A **Shopify store** you have access to (as staff or collaborator)
 
-- **Per-template timing** — How long each section, snippet, and layout takes to render
-- **Per-line timing** — Which specific Liquid tags are slow (e.g., `all_products[]` lookups)
-- **Render counts** — How many times each template is rendered
-- **Hierarchical call tree** — Full parent/child relationships for flame graph reconstruction
+## Troubleshooting
 
-## Workflow Examples
+### "Not authenticated" error
 
-### 1. Profile a Page
+Run the `login` tool first. It opens a browser window — sign in with your Shopify account.
 
-```
-> profile_page(storeUrl="onebed.com.au", pagePath="/")
+### Token expired
 
-Returns: 3,232 nodes, 188ms total render time
-- layout/theme: 25.7% (48.4ms, 676 renders)
-- sections/more-from-onebed-carousel: 9.0% (16.9ms)
-- snippets/header-mega-menu: 5.8% (11.0ms, 761 renders)
-```
+The server auto-refreshes tokens using the OAuth2 refresh token. If refresh fails (rare), just run `login` again.
 
-### 2. Find Slow Templates
+### Puppeteer browser doesn't open
 
-```
-> find_slow_templates(storeUrl="onebed.com.au", thresholdMs=5)
-
-Returns: Templates exceeding 5ms with file paths and line numbers
-```
-
-### 3. Profile a Draft Theme
-
-```
-> profile_page(storeUrl="onebed.com.au", pagePath="/?preview_theme_id=123456789")
-```
-
-### 4. Static Analysis (Admin API)
-
-For deep analysis of Liquid code patterns:
-
-```
-> login_legacy(storeUrl="mystore.myshopify.com")
-> analyze_liquid_file(storeUrl="mystore.myshopify.com", fileName="layout/theme.liquid")
-```
-
-## Two Authentication Systems
-
-| System              | Tool           | Purpose                                 | Token Storage                                  |
-| ------------------- | -------------- | --------------------------------------- | ---------------------------------------------- |
-| **OAuth2** (new)    | `login`        | Profiling tools (`profile_page`, etc.)  | `~/.shopify-theme-inspector/oauth-tokens.json` |
-| **Cookie** (legacy) | `login_legacy` | Admin API tools (`analyze_liquid_file`) | `~/.shopify-theme-inspector/sessions.json`     |
-
-- Use `login` for profiling (recommended first step)
-- Use `login_legacy` only if you need `analyze_liquid_file` for static code analysis
-
-## Development
+Make sure Chrome/Chromium is installed. On headless servers, you may need to install additional dependencies:
 
 ```bash
-# Build
-npm run build
-
-# Test with MCP Inspector
-npx @modelcontextprotocol/inspector node dist/index.js
-
-# Watch mode
-npm run dev
+npx puppeteer browsers install chrome
 ```
 
-## Development Status
+### Empty or basic profiling data
 
-- [x] Phase 1: Project Setup & Basic MCP Server
-- [x] Phase 2: Shopify Authentication Module (Cookie-based)
-- [x] Phase 3: Basic Profiling (MVP)
-- [x] Phase 4: OAuth2 Fix — Full Flame Graph Data (v0.2.0)
-- [x] Phase 5: Flame Graph Processing & Summaries
-- [x] Phase 6: Performance Analysis Tools
-- [x] Phase 7: Documentation
-- [ ] Phase 8: Advanced Features (recommendations engine, token refresh, batch profiling)
+Make sure you're logged into a store where you have staff access. Draft/development themes may have limited profiling data.
 
-## Technical Details
+### Port conflicts with MCP Inspector
 
-See [`ROOT-CAUSE-ANALYSIS.md`](./ROOT-CAUSE-ANALYSIS.md) for the full technical investigation and implementation details.
+If running the inspector for debugging:
+
+```bash
+npx @modelcontextprotocol/inspector node dist/index.js
+```
 
 ## License
 
