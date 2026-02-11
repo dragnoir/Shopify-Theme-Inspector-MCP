@@ -33,6 +33,7 @@ import { profilePage } from "./profiler/page-profiler.js";
 import { generateSummary } from "./profiler/flamegraph-parser.js";
 import { generateRecommendations } from "./profiler/recommendations.js";
 import { saveProfileSnapshot, getProfileHistory, getProfiledPages, clearProfileHistory } from "./profiler/profile-history.js";
+import { exportSpeedscopeJson, exportCsv, exportMarkdown } from "./profiler/profile-export.js";
 
 // Create the MCP server instance
 const server = new McpServer({
@@ -76,6 +77,7 @@ server.tool(
               "compare_pages (diff two pages)",
               "batch_profile (profile multiple pages)",
               "get_profile_history (trend tracking)",
+              "export_profile (speedscope/CSV/markdown)",
               "analyze_liquid_file",
             ],
           }, null, 2),
@@ -882,6 +884,104 @@ server.tool(
               topSlowTemplates: s.topSlowTemplates,
             })),
           }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
+// TOOL: export_profile
+// Export profiling results in various formats
+// ============================================================================
+server.tool(
+  "export_profile",
+  "Profile a page and export the results in a specified format. Supported formats: 'speedscope' (JSON for speedscope.app visualization), 'csv' (spreadsheet-friendly), 'markdown' (shareable report with tables, recommendations, and severity badges). Can save to a file or return inline.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePath: z.string().optional().describe("The page path to profile (defaults to '/')"),
+    format: z.enum(["speedscope", "csv", "markdown"]).describe("Export format: 'speedscope', 'csv', or 'markdown'"),
+    outputPath: z.string().optional().describe("Optional file path to save the export. If omitted, returns content inline."),
+  },
+  async ({ storeUrl, pagePath, format, outputPath }) => {
+    logger.info(`Tool 'export_profile' called`, { storeUrl, pagePath, format, outputPath });
+
+    const result = await profilePage({ storeUrl, pagePath: pagePath || "/" });
+
+    if (!result.success || !result.data || !result.summary) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: result.error || "Failed to profile page. Make sure you are logged in (use 'login' tool).",
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    const recommendations = generateRecommendations(result.data, result.summary);
+
+    // Auto-save to history
+    try { saveProfileSnapshot(result.storeUrl, result.pagePath, result.summary, recommendations); } catch (_) {}
+
+    const exportOptions = {
+      storeUrl: result.storeUrl,
+      pagePath: result.pagePath,
+      data: result.data,
+      summary: result.summary,
+      recommendations,
+    };
+
+    let exportResult;
+    switch (format) {
+      case "speedscope":
+        exportResult = exportSpeedscopeJson(exportOptions, outputPath);
+        break;
+      case "csv":
+        exportResult = exportCsv(exportOptions, outputPath);
+        break;
+      case "markdown":
+        exportResult = exportMarkdown(exportOptions, outputPath);
+        break;
+    }
+
+    // For speedscope format, don't return the full JSON inline (too large)
+    const inlineContent = format === "speedscope" && !outputPath
+      ? `Speedscope JSON is ${exportResult.content.length} bytes. Use the 'outputPath' parameter to save it to a file, then open it at ${exportResult.speedscopeUrl}`
+      : format === "speedscope" && outputPath
+        ? `Speedscope JSON saved to ${exportResult.filePath}. Open it at ${exportResult.speedscopeUrl} by dragging the file into the browser.`
+        : outputPath
+          ? `${format.toUpperCase()} report saved to ${exportResult.filePath}`
+          : exportResult.content;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: format === "speedscope"
+            ? JSON.stringify({
+                success: true,
+                format: exportResult.format,
+                filePath: exportResult.filePath || null,
+                speedscopeUrl: exportResult.speedscopeUrl,
+                sizeBytes: exportResult.content.length,
+                message: inlineContent,
+                totalRenderTimeMs: recommendations.totalRenderTimeMs,
+                rating: recommendations.overallRating,
+              }, null, 2)
+            : outputPath
+              ? JSON.stringify({
+                  success: true,
+                  format: exportResult.format,
+                  filePath: exportResult.filePath,
+                  message: inlineContent,
+                  totalRenderTimeMs: recommendations.totalRenderTimeMs,
+                  rating: recommendations.overallRating,
+                }, null, 2)
+              : exportResult.content,
         },
       ],
     };

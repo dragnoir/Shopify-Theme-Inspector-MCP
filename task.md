@@ -103,11 +103,17 @@
   - `get_profile_history` tool: view trends (improving/degrading/stable), list profiled pages, clear history
   - All profiling tools auto-save snapshots (profile_page, get_bottlenecks, compare_pages, batch_profile)
 
-### 8d: Export & integration
+### 8d: Export & integration ✅ (v0.3.0)
 
-- [ ] Add export functionality (speedscope JSON, CSV summary)
-- [ ] Generate direct [speedscope.app](https://www.speedscope.app) links for visualization
-- [ ] Add Markdown report generation for sharing
+- [x] Add export functionality (speedscope JSON, CSV summary)
+  - `export_profile` tool with `format: "speedscope" | "csv" | "markdown"` and optional `outputPath`
+  - Speedscope JSON: raw speedscope-format data, ready for drag-and-drop at speedscope.app
+  - CSV: template breakdown, slow nodes, and recommendations in spreadsheet-friendly format
+- [x] Generate direct speedscope.app links for visualization
+  - `speedscopeUrl` field in export response — save the file and open at speedscope.app
+- [x] Add Markdown report generation for sharing
+  - Full report with summary, severity badges (🔴🟡🔵), recommendation details, template tables, and slow node tables
+  - Can be saved to `.md` file or returned inline for direct use
 
 ### 8e: README & publishing
 
