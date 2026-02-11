@@ -1,64 +1,66 @@
-import puppeteer, { Browser, Page, HTTPResponse } from "puppeteer";
-import {
-  getSession,
-  normalizeStoreUrl,
-  isSessionValid,
-  getStorefrontUrl,
-  getPrimaryMyshopifySession,
-} from "../auth/session-manager.js";
-import { ProfileResult, ProfilingData, parseProfilingTree } from "./flamegraph-parser.js";
+/**
+ * Shopify Liquid Page Profiler
+ * 
+ * This module profiles Shopify pages using the SAME mechanism as the Chrome
+ * extension: sending an HTTP request with:
+ *   - Accept: application/vnd.speedscope+json
+ *   - Authorization: Bearer <storefront-renderer-devtools-token>
+ * 
+ * When Shopify receives this request, it returns the full Liquid render
+ * profiling data in speedscope JSON format instead of the normal HTML page.
+ * 
+ * CRITICAL INSIGHT (from reverse-engineering the Chrome extension source):
+ * The Chrome extension does NOT use cookies or ?profile_liquid=true.
+ * It uses an OAuth2 Bearer token obtained through Shopify Identity, with
+ * the storefront-renderer devtools scope. The response is pure JSON profiling
+ * data in speedscope format.
+ */
+
+import { getProfilingAccessToken, getOAuthTokens } from "../auth/shopify-identity-oauth.js";
+import { ProfileResult, ProfilingData, ProfileNode, parseProfilingTree } from "./flamegraph-parser.js";
 import { analyzeProfile } from "./profile-analyzer.js";
 import { logger } from "../utils/logger.js";
 
-async function discoverCanonicalDomain(storeUrl: string, cookies: any[]): Promise<string | null> {
-  const adminUrl = `https://${storeUrl}/admin`;
-  logger.debug(`Probing canonical domain via: ${adminUrl}`);
-  const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join("; ");
-  
-  try {
-    const response = await fetch(adminUrl, {
-      method: "GET", // Change to GET to be safer
-      redirect: "manual",
-      headers: {
-        "Cookie": cookieHeader,
-        "User-Agent": "Shopify-Theme-Inspector-MCP/0.1.0"
-      }
-    });
+// ============================================================================
+// Speedscope data types (from the Chrome extension's expected response)
+// ============================================================================
 
-    // Check location header
-    const location = response.headers.get("location");
-    const status = response.status;
-    
-    if (location) {
-      // Case 1: Redirects to admin.shopify.com/store/[handle]
-      if (location.includes("admin.shopify.com/store/")) {
-        const match = location.match(/admin\.shopify\.com\/store\/([^\/]+)/);
-        if (match && match[1]) {
-            return `${match[1]}.myshopify.com`;
-        }
-      }
-      
-      // Case 2: Redirects directly to [handle].myshopify.com
-      // e.g. https://onebedau.myshopify.com/admin
-      if (location.includes(".myshopify.com")) {
-        try {
-          const url = new URL(location);
-          return url.hostname;
-        } catch (e) {
-          // If location is partial or invalid, try fuzzy match
-          const match = location.match(/([a-zA-Z0-9-]+\.myshopify\.com)/);
-          if (match && match[1]) {
-            return match[1];
-          }
-        }
-      }
-    }
-    return null;
-  } catch (error) {
-    logger.error(`Error discovering canonical domain: ${error}`);
-    return null;
-  }
+interface SpeedscopeFrame {
+  name: string;
+  file?: string;
+  line?: number;
+  col?: number;
 }
+
+interface SpeedscopeEvent {
+  type: "O" | "C"; // Open or Close
+  frame: number; // Index into shared.frames
+  at: number; // Timestamp in microseconds
+}
+
+interface SpeedscopeEventedProfile {
+  type: "evented";
+  name: string;
+  unit: string; // e.g., "microseconds"
+  startValue: number;
+  endValue: number;
+  events: SpeedscopeEvent[];
+}
+
+interface SpeedscopeFile {
+  $schema: string;
+  profiles: SpeedscopeEventedProfile[];
+  shared: {
+    frames: SpeedscopeFrame[];
+  };
+  activeProfileIndex?: number;
+  exporter?: string;
+  name?: string;
+}
+
+// ============================================================================
+// Public API
+// ============================================================================
 
 export interface ProfilePageOptions {
   storeUrl: string;
@@ -67,515 +69,353 @@ export interface ProfilePageOptions {
 }
 
 /**
- * Profile a Shopify store page by loading it with profiling enabled.
- * Uses Puppeteer with stored session cookies to access the profiling data.
- *
- * The Shopify Theme Inspector Chrome extension works by:
- * 1. Authenticating via Shopify admin/partner OAuth
- * 2. Loading the page with `?profile_liquid=true` query parameter
- * 3. The response contains a JSON blob with the Liquid profiling data
+ * Profile a Shopify store page using the OAuth2 Bearer token approach.
+ * 
+ * This is the CORRECT method, matching the Chrome extension:
+ * 1. Fetch the page URL with Accept: application/vnd.speedscope+json
+ * 2. Include Authorization: Bearer <subject_token>
+ * 3. Parse the speedscope JSON response
  */
-export async function profilePage(
-  options: ProfilePageOptions
-): Promise<ProfileResult> {
+export async function profilePage(options: ProfilePageOptions): Promise<ProfileResult> {
   const { storeUrl, pagePath = "/", timeout = 30000 } = options;
-  const normalizedUrl = normalizeStoreUrl(storeUrl);
   
   logger.info(`Profiling page: ${storeUrl}${pagePath}`);
 
-  // Validate session
-  const session = getSession(normalizedUrl);
-  if (!session || !isSessionValid(session)) {
-    return {
-      success: false,
-      storeUrl: normalizedUrl,
-      pagePath,
-      error: "Not authenticated. Use the login tool first.",
-    };
-  }
+  // Normalize the store URL
+  const normalizedUrl = normalizeStoreUrl(storeUrl);
 
-  let browser: Browser | null = null;
-
-  try {
-    browser = await puppeteer.launch({
-      headless: true,
-      defaultViewport: { width: 1280, height: 720 },
-    });
-
-    const page = await browser.newPage();
+  // Try OAuth2 token-based profiling first (the correct method)
+  const accessToken = await getProfilingAccessToken(normalizedUrl);
   
-  // Set User Agent to avoid Cloudflare/Bot detection on headless requests
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-
-    // Set stored cookies for authentication
-    const cookiesToSet = session.cookies.map((c) => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-      expires: c.expires,
-      httpOnly: c.httpOnly,
-      secure: c.secure,
-    }));
-    await page.setCookie(...cookiesToSet);
-
-    // Build the profiling URL with ?profile_liquid=true
-    // CRITICAL: We must use the .myshopify.com domain because that's where our
-    // admin session cookies (koa.sid, _shopify_y, etc.) are valid.
-    // If we use a custom domain (e.g., onebed.com.au), the browser won't send
-    // the admin cookies, and Shopify won't return profiling data.
-    
-    // Check if we are using a custom domain
-    let effectiveStoreUrl = normalizedUrl;
-    if (!effectiveStoreUrl.includes(".myshopify.com")) {
-      const primarySession = getPrimaryMyshopifySession();
-      if (primarySession) {
-        effectiveStoreUrl = normalizeStoreUrl(primarySession.storeUrl);
-        logger.info(`Switched to canonical myshopify domain (session): ${effectiveStoreUrl}`);
-      } else {
-        // Try to discover it via admin redirect
-        logger.debug(`Attempting to discover canonical domain for ${effectiveStoreUrl}`);
-        const discovered = await discoverCanonicalDomain(effectiveStoreUrl, session.cookies);
-        if (discovered) {
-            effectiveStoreUrl = discovered;
-            logger.info(`Switched to canonical myshopify domain (discovered): ${effectiveStoreUrl}`);
-        } else {
-            logger.warn(`Could not discover canonical domain for ${effectiveStoreUrl}, using original.`);
-        }
-      }
-    }
-
-    const baseUrl = `https://${effectiveStoreUrl}`;
-    const cleanPath = pagePath.startsWith("/") ? pagePath : `/${pagePath}`;
-    const url = new URL(cleanPath, baseUrl);
-    url.searchParams.set("profile_liquid", "true");
-    // Add preview_theme_id if you want to profile a specific theme, 
-    // but for now we profile the live theme.
-
-    const profileUrl = url.toString();
-    logger.info(`Profiling on admin domain: ${profileUrl}`);
-
-    // Set up response capture to get headers and body
-    // Navigate to the page
-    const response = await page.goto(profileUrl, {
-      waitUntil: "networkidle2",
-      timeout,
-    });
-
-    // Try multiple extraction methods
-    const profilingData = await extractProfilingData(page, response);
-
-    if (!profilingData) {
-      // Collect debug info to help diagnose
-      const currentUrl = page.url();
-      const pageTitle = await page.title();
-      const statusCode = response?.status();
-      
-      let fallbackErrorDetails: string | undefined;
-
-      // Fallback: Try to find a draft theme to profile if the live theme failed (likely due to redirect)
-      console.error("No profiling data on primary URL. Attempting to profile a draft theme...");
-      
-      try {
-          // Fetch themes.json from Admin API
-          // We use the same page/session which should be authenticated
-          // CRITICAL: Use session.storeUrl (myshopify.com) not normalizedUrl (which might be custom domain)
-          let targetStoreUrl = session.storeUrl;
-          if (!targetStoreUrl.includes('.myshopify.com')) {
-              const primarySession = getPrimaryMyshopifySession();
-              if (primarySession) {
-                  targetStoreUrl = primarySession.storeUrl;
-                  console.error(`Switched to primary myshopify session: ${targetStoreUrl}`);
-                  
-                  // CRITICAL: Inject cookies from the primary session (admin.shopify.com cookies)
-                  // otherwise the request to admin/themes.json will fail (redirect to login)
-                  // because the browser currently only has cookies for the custom domain.
-                  if (primarySession.cookies && primarySession.cookies.length > 0) {
-                      const cookiesToSet = primarySession.cookies.map((c) => ({
-                        name: c.name,
-                        value: c.value,
-                        domain: c.domain,
-                        path: c.path,
-                        expires: c.expires,
-                        httpOnly: c.httpOnly,
-                        secure: c.secure,
-                      }));
-                      await page.setCookie(...cookiesToSet);
-                  }
-              } else {
-                  console.error("Warning: Could not find a myshopify.com session. Admin API might fail.");
-              }
-          }
-
-          const themesUrl = `https://${targetStoreUrl}/admin/themes.json`;
-          const themesResponse = await page.goto(themesUrl, { waitUntil: 'domcontentloaded' });
-          
-          if (themesResponse && themesResponse.ok()) {
-              // Extract handle from redirect URL (e.g., https://admin.shopify.com/store/onebedau/themes.json)
-              // This is crucial if we started with a custom domain and couldn't find the myshopify session key,
-              // but the request succeeded via redirects (due to valid cookies).
-              const finalThemesUrl = themesResponse.url();
-              let myshopifyDomain = targetStoreUrl;
-              const match = finalThemesUrl.match(/store\/([^\/]+)\/themes/);
-              if (match && match[1]) {
-                  const handle = match[1];
-                  myshopifyDomain = `${handle}.myshopify.com`;
-                  console.error(`Extracted myshopify domain from redirect: ${myshopifyDomain}`);
-              }
-
-              const content = await page.evaluate(() => document.body.innerText);
-              const data = JSON.parse(content);
-              const themes = data.themes || [];
-              
-              // Find a draft theme (unpublished) or "Dawn" as a fallback
-              const draftTheme = themes.find((t: any) => t.role === 'unpublished');
-              
-              if (draftTheme) {
-                  console.error(`Found draft theme: ${draftTheme.name} (${draftTheme.id}). Retrying profiling...`);
-                  
-                  // Construct preview URL for the draft theme on myshopify.com
-                  // Using the myshopify domain is likely required to ensure the profile_liquid flag works correctly
-                  // and avoids custom domain caching/stripping issues.
-                  const draftProfileUrl = `https://${myshopifyDomain}/?preview_theme_id=${draftTheme.id}&profile_liquid=true`;
-                  
-                  const retryResponse = await page.goto(draftProfileUrl, { waitUntil: 'networkidle2' });
-                  
-                  // Try extraction again
-                  const retryData = await extractProfilingData(page, retryResponse);
-                  
-                  if (retryData) {
-                       return {
-                          success: true,
-                          storeUrl: normalizedUrl,
-                          pagePath: cleanPath,
-                          profileUrl: draftProfileUrl,
-                          data: retryData,
-                          warning: `Profiled draft theme "${draftTheme.name}" because live theme profiling failed.`,
-                       };
-                  }
-              }
-          }
-      } catch (fallbackError) {
-          const errString = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-          console.error("Draft theme fallback failed:", errString);
-          fallbackErrorDetails = errString;
-      }
-      
-      const debugInfo = `No profiling data found on live URL or fallback draft theme.\n` +
-          (fallbackErrorDetails ? `Fallback error: ${fallbackErrorDetails}\n` : '') +
-          `\nDebug info:\n` +
-          `- Requested URL: ${profileUrl}\n` +
-          `- Final URL: ${currentUrl}\n` +
-          `- Page title: ${pageTitle}\n` +
-          `- HTTP status: ${statusCode}\n\n` +
-          `Possible causes:\n` +
-          `- Session may have expired (try logging out and back in)\n` +
-          `- Custom domain redirection might be blocking admin cookies\n` +
-          `- The store may not support Liquid profiling`;
-
+  if (!accessToken) {
+    // Also try with the raw storeUrl in case it was stored differently
+    const altToken = await getProfilingAccessToken(storeUrl);
+    if (!altToken) {
       return {
         success: false,
         storeUrl: normalizedUrl,
+        pagePath,
+        error: "Not authenticated. Use the 'login' tool first to authenticate with Shopify Identity.",
+      };
+    }
+    return await profileWithToken(normalizedUrl, pagePath, altToken, timeout);
+  }
+
+  return await profileWithToken(normalizedUrl, pagePath, accessToken, timeout);
+}
+
+/**
+ * Profile a page using the Bearer token (replicating Chrome extension behavior)
+ */
+async function profileWithToken(
+  storeUrl: string,
+  pagePath: string,
+  accessToken: string,
+  timeout: number
+): Promise<ProfileResult> {
+  // Build the URL exactly as the Chrome extension does
+  const cleanPath = pagePath.startsWith("/") ? pagePath : `/${pagePath}`;
+  const profileUrl = `https://${storeUrl}${cleanPath}`;
+  
+  logger.info(`Fetching profiling data from: ${profileUrl}`);
+  logger.info(`Using Bearer token auth (same as Chrome extension)`);
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const response = await fetch(profileUrl, {
+      method: "GET",
+      headers: {
+        "Accept": "application/vnd.speedscope+json",
+        "Authorization": `Bearer ${accessToken}`,
+        "User-Agent": "Shopify-Theme-Inspector-MCP/0.2.0",
+      },
+      signal: controller.signal,
+      redirect: "follow",
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      return {
+        success: false,
+        storeUrl,
         pagePath: cleanPath,
-        error: debugInfo
+        error: `Profiling request failed: HTTP ${response.status} ${response.statusText}\n` +
+               `URL: ${profileUrl}\n` +
+               `Response: ${bodyText.substring(0, 500)}\n\n` +
+               `This may mean:\n` +
+               `- The OAuth token has expired (try logout + login again)\n` +
+               `- The URL is not a valid Shopify storefront page\n` +
+               `- The store doesn't support profiling for your account`,
       };
     }
 
+    // Check Content-Type to see if we got JSON back
+    const contentType = response.headers.get("content-type") || "";
+    const responseBody = await response.text();
+
+    logger.info(`Response Content-Type: ${contentType}`);
+    logger.info(`Response body length: ${responseBody.length}`);
+    logger.debug(`Response body preview: ${responseBody.substring(0, 500)}`);
+
+    // Try to parse as speedscope JSON
+    let jsonData: any;
+    try {
+      jsonData = JSON.parse(responseBody);
+    } catch {
+      // Response is HTML, not JSON — token may not be working
+      logger.warn("Response is not JSON. Got HTML instead. Token may be invalid.");
+      
+      // Try to extract Server-Timing as fallback
+      const serverTiming = response.headers.get("server-timing");
+      if (serverTiming) {
+        logger.info(`Found Server-Timing header: ${serverTiming}`);
+        const basicData = parseServerTimingHeader(serverTiming);
+        if (basicData) {
+          return {
+            success: true,
+            storeUrl,
+            pagePath: cleanPath,
+            profileUrl,
+            data: basicData,
+            warning: "Got basic Server-Timing data only. The Bearer token may not have " +
+                     "the correct scope or may have expired. Try 'logout' then 'login' again.",
+            summary: analyzeProfile(basicData),
+          };
+        }
+      }
+
+      return {
+        success: false,
+        storeUrl,
+        pagePath: cleanPath,
+        error: `Expected speedscope JSON but got HTML response.\n` +
+               `Content-Type: ${contentType}\n` +
+               `Body preview: ${responseBody.substring(0, 300)}\n\n` +
+               `The Bearer token may be invalid or expired. Try 'logout' then 'login' again.`,
+      };
+    }
+
+    // We got JSON! Check if it's speedscope format
+    if (isSpeedscopeFormat(jsonData)) {
+      logger.info("✅ Got full speedscope profiling data!");
+      const profilingData = parseSpeedscopeData(jsonData);
+      return {
+        success: true,
+        storeUrl,
+        pagePath: cleanPath,
+        profileUrl,
+        data: profilingData,
+        summary: analyzeProfile(profilingData),
+      };
+    }
+
+    // Got JSON but not speedscope format — might be another profiling format
+    logger.info("Got JSON response but not in speedscope format. Trying alternative parsing...");
+    logger.debug(`JSON keys: ${Object.keys(jsonData).join(", ")}`);
+
+    // Check if it's a direct profiling data format
+    if (jsonData.nodes || jsonData.children || jsonData.profiles || jsonData.profile) {
+      const profilingData = normalizeGenericProfilingData(jsonData);
+      return {
+        success: true,
+        storeUrl,
+        pagePath: cleanPath,
+        profileUrl,
+        data: profilingData,
+        summary: analyzeProfile(profilingData),
+      };
+    }
+
+    // Unknown JSON format
     return {
       success: true,
-      storeUrl: normalizedUrl,
+      storeUrl,
       pagePath: cleanPath,
       profileUrl,
-      data: profilingData,
-      summary: analyzeProfile(profilingData),
+      data: {
+        timestamp: new Date().toISOString(),
+        totalTime: 0,
+        nodeCount: 0,
+        raw: jsonData,
+        tree: { name: "root", type: "root", time: 0, totalTime: 0, children: [] },
+      },
+      warning: `Got JSON response but in an unexpected format. Keys: ${Object.keys(jsonData).join(", ")}`,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return {
       success: false,
-      storeUrl: normalizedUrl,
+      storeUrl,
       pagePath,
       error: `Profiling failed: ${errorMessage}`,
     };
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 }
 
-/**
- * Extract Liquid profiling data from the loaded page.
- *
- * When `?profile_liquid=true` is used with proper auth:
- * - The response body may be a JSON blob with profiling data
- * - Or the profiling data may be embedded in the page
- * - Or it may be in response headers (Server-Timing, X-Profiler, etc.)
- */
-async function extractProfilingData(
-  page: Page,
-  response: HTTPResponse | null
-): Promise<ProfilingData | null> {
-  // Method 1: Try to parse the entire page body as JSON
-  // When profile_liquid=true works, Shopify may return the profiling data
-  // as the entire response body
-  try {
-    const bodyText = await page.evaluate(() => document.body?.innerText || "");
-    if (bodyText.trim().startsWith("{") || bodyText.trim().startsWith("[")) {
-      try {
-        const jsonData = JSON.parse(bodyText.trim());
-        if (isProfilingData(jsonData)) {
-          console.error("Found profiling data in response body (JSON)");
-          return normalizeProfilingData(jsonData);
-        }
-      } catch {
-        // Not valid JSON
-      }
-    }
-  } catch {
-    // Page evaluation failed
-  }
-
-  // Method 2: Check page source for JSON (may be wrapped in HTML)
-  try {
-    const pageContent = await page.content();
-
-    // Look for JSON between <pre> tags (common format)
-    const preMatch = pageContent.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-    if (preMatch?.[1]) {
-      try {
-        const jsonData = JSON.parse(preMatch[1].trim());
-        if (isProfilingData(jsonData)) {
-          console.error("Found profiling data in <pre> tag");
-          return normalizeProfilingData(jsonData);
-        }
-      } catch {
-        // Not valid JSON
-      }
-    }
-
-    // Look for profiling JSON embedded anywhere in the page
-    // Shopify profiling data typically has recognizable structures
-    const profilingPatterns = [
-      // Pattern: {"name":"liquid","...}
-      /(\{"name"\s*:\s*"liquid"[\s\S]*?\})\s*$/m,
-      // Pattern: typical profiling structure with "nodes" or "children"
-      /(\{[\s\S]*?"(?:nodes|children|profiles?)"[\s\S]*?"(?:time|duration|total_time)"[\s\S]*?\})/,
-      // Pattern: profiling data with "code" and "line_number"
-      /(\{[\s\S]*?"code"[\s\S]*?"line_number"[\s\S]*?\})/,
-    ];
-
-    for (const pattern of profilingPatterns) {
-      const match = pageContent.match(pattern);
-      if (match?.[1]) {
-        try {
-          const jsonData = JSON.parse(match[1]);
-          if (isProfilingData(jsonData)) {
-            console.error("Found profiling data via pattern match");
-            return normalizeProfilingData(jsonData);
-          }
-        } catch {
-          // Not valid JSON
-        }
-      }
-    }
-  } catch {
-    // Content retrieval failed
-  }
-
-  // Method 3: Check response headers
-  if (response) {
-    try {
-      const headers = response.headers();
-      
-      // Check Server-Timing header
-      const serverTiming = headers["server-timing"];
-      if (serverTiming) {
-        console.error("Found Server-Timing header:", serverTiming);
-        return parseServerTimingHeader(serverTiming);
-      }
-
-      // Check for X-Profiler or similar headers
-      for (const [key, value] of Object.entries(headers)) {
-        if (key.toLowerCase().includes("profil") || key.toLowerCase().includes("liquid")) {
-          console.error(`Found profiling header ${key}:`, value);
-          try {
-            const jsonData = JSON.parse(value);
-            return normalizeProfilingData(jsonData);
-          } catch {
-            // Not JSON
-          }
-        }
-      }
-    } catch {
-      // Header extraction failed
-    }
-  }
-
-  // Method 4: Look for profiling data in script tags or global variables
-  try {
-    const data = await page.evaluate(() => {
-      // Check global variables
-      const win = window as any;
-      if (win.Shopify?.liquid?.profiler) return win.Shopify.liquid.profiler;
-      if (win.__st_prof) return win.__st_prof;
-      if (win.ShopifyAnalytics?.meta?.profiling) return win.ShopifyAnalytics.meta.profiling;
-
-      // Look for profiling script tag
-      const profilingScript = document.querySelector(
-        'script[id="elements-data"], script[data-profiling], script[type="application/json"][data-liquid-profiling]'
-      );
-      if (profilingScript?.textContent) {
-        try { return JSON.parse(profilingScript.textContent); } catch { /* skip */ }
-      }
-
-      // Search all script tags
-      const scripts = document.querySelectorAll("script");
-      for (const script of scripts) {
-        const content = script.textContent || "";
-        const match = content.match(
-          /(?:profil(?:er?|ing)|liquid[_-]profil)/i
-        );
-        if (match && content.includes("{")) {
-          // Try to extract JSON from the script
-          const jsonMatch = content.match(/=\s*(\{[\s\S]*\})\s*;/);
-          if (jsonMatch?.[1]) {
-            try { return JSON.parse(jsonMatch[1]); } catch { /* skip */ }
-          }
-        }
-      }
-
-      // Check for performance bar
-      const perfBar = document.querySelector(
-        "#shopify-perf-bar, [data-perf-bar], .shopify-profiler"
-      );
-      if (perfBar) {
-        const dataAttr = perfBar.getAttribute("data-profiling") 
-          || perfBar.getAttribute("data-profile");
-        if (dataAttr) {
-          try { return JSON.parse(dataAttr); } catch { /* skip */ }
-        }
-      }
-
-      return null;
-    });
-
-    if (data && isProfilingData(data)) {
-      console.error("Found profiling data in page scripts/variables");
-      return normalizeProfilingData(data);
-    }
-  } catch {
-    // Page evaluation failed
-  }
-
-  // Method 5: Try fetching the page directly without rendering
-  // (some profiling endpoints return raw JSON)
-  if (response) {
-    try {
-      const responseBody = await response.text();
-      if (responseBody.trim().startsWith("{") || responseBody.trim().startsWith("[")) {
-        const jsonData = JSON.parse(responseBody.trim());
-        if (isProfilingData(jsonData)) {
-          console.error("Found profiling data in raw response body");
-          return normalizeProfilingData(jsonData);
-        }
-      }
-    } catch {
-      // Response parsing failed
-    }
-  }
-
-  return null;
-}
+// ============================================================================
+// Speedscope Format Parser
+// ============================================================================
 
 /**
- * Check if a data object looks like Shopify Liquid profiling data
+ * Check if data is in speedscope format
  */
-function isProfilingData(data: any): boolean {
-  if (!data || typeof data !== "object") return false;
-  
-  // Check for known profiling data structures
+function isSpeedscopeFormat(data: any): data is SpeedscopeFile {
   return (
-    // Has nodes/children with timing data
-    (data.nodes || data.children || data.profiles || data.profile) &&
-    true
-  ) || (
-    // Has time/duration fields
-    typeof data.time === "number" ||
-    typeof data.duration === "number" ||
-    typeof data.totalTime === "number" ||
-    typeof data.total_time === "number"
-  ) || (
-    // Has code/line_number fields (individual node)
-    data.code && (data.line_number !== undefined || data.line !== undefined)
-  ) || (
-    // Has name "liquid" (root profiling node)
-    data.name === "liquid" || data.name === "layout"
+    data &&
+    typeof data === "object" &&
+    Array.isArray(data.profiles) &&
+    data.shared &&
+    Array.isArray(data.shared?.frames)
   );
 }
 
 /**
- * Parse Server-Timing header into profiling data
+ * Parse speedscope format into our ProfilingData structure.
+ * 
+ * Speedscope format uses an "evented" profile with Open (O) and Close (C) events.
+ * Each event references a frame index. By processing O/C events in order,
+ * we can reconstruct a hierarchical call tree (flame graph).
  */
-function parseServerTimingHeader(header: string): ProfilingData | null {
-  try {
-    // Server-Timing format: metric;dur=X;desc="Y", ...
-    const entries = header.split(",").map((entry) => {
-      const parts = entry.trim().split(";");
-      const name = parts[0]?.trim();
-      let duration = 0;
-      let description = "";
+function parseSpeedscopeData(data: SpeedscopeFile): ProfilingData {
+  const profiles = data.profiles;
+  const frames = data.shared.frames;
 
-      for (const part of parts.slice(1)) {
-        const [key, val] = part.split("=");
-        if (key?.trim() === "dur") duration = parseFloat(val || "0");
-        if (key?.trim() === "desc") description = (val || "").replace(/"/g, "");
-      }
-
-      return { name, duration, description };
-    });
-
-    const liquidEntries = entries.filter(
-      (e) => e.name?.toLowerCase().includes("liquid") || e.description?.toLowerCase().includes("liquid")
-    );
-    
-    // If no specific liquid entries found, return all entries as basic profiling
-    // This happens when detailed liquid profiling is not enabled or supported,
-    // but the server still returns high-level stats (render, db, processing).
-    const validEntries = liquidEntries.length > 0 ? liquidEntries : entries;
-
-    if (validEntries.length > 0) {
-      const totalTime = validEntries.reduce((sum, e) => sum + e.duration, 0);
-      const isBasic = liquidEntries.length === 0;
-      
-      return {
-        timestamp: new Date().toISOString(),
-        totalTime,
-        nodeCount: validEntries.length,
-        raw: { serverTiming: entries, type: isBasic ? "basic" : "liquid" },
-        tree: {
-          name: isBasic ? "root" : "liquid",
-          children: validEntries.map((e) => ({
-            name: e.description || e.name,
-            time: e.duration,
-          })),
-        },
-      };
-    }
-
-    return null;
-  } catch {
-    return null;
+  if (!profiles || profiles.length === 0) {
+    return {
+      timestamp: new Date().toISOString(),
+      totalTime: 0,
+      nodeCount: 0,
+      raw: data,
+      tree: { name: "root", type: "root", time: 0, totalTime: 0, children: [] },
+    };
   }
+
+  // Use the first (usually only) profile
+  const profile = profiles[0];
+  const unit = profile.unit || "microseconds";
+  const unitMultiplier = unit === "microseconds" ? 0.001 : unit === "milliseconds" ? 1 : 1;
+
+  // Build the call tree from evented profile
+  const rootNode: ProfileNode = {
+    name: profile.name || "liquid",
+    type: "root",
+    time: 0,
+    totalTime: (profile.endValue - profile.startValue) * unitMultiplier,
+    children: [],
+  };
+
+  // Stack-based reconstruction of the call tree
+  const stack: ProfileNode[] = [rootNode];
+  const openTimes: number[] = [profile.startValue];
+
+  for (const event of profile.events) {
+    const frame = frames[event.frame];
+    
+    if (event.type === "O") {
+      // Open event: push new node onto the stack
+      const node: ProfileNode = {
+        name: frame?.name || `frame_${event.frame}`,
+        type: inferNodeType(frame?.name || "", frame),
+        file: frame?.file,
+        line: frame?.line,
+        time: 0,
+        totalTime: 0,
+        children: [],
+      };
+
+      // Add as child of current top of stack
+      const parent = stack[stack.length - 1];
+      parent.children.push(node);
+      
+      stack.push(node);
+      openTimes.push(event.at);
+    } else if (event.type === "C") {
+      // Close event: pop from stack and calculate time
+      if (stack.length > 1) {
+        const node = stack.pop()!;
+        const openTime = openTimes.pop()!;
+        node.totalTime = (event.at - openTime) * unitMultiplier;
+        
+        // Self time = total time minus children's total time
+        const childrenTime = node.children.reduce((sum, c) => sum + c.totalTime, 0);
+        node.time = Math.max(0, node.totalTime - childrenTime);
+      }
+    }
+  }
+
+  // Count total nodes
+  const nodeCount = countNodes(rootNode);
+  
+  // Recalculate root total time from children if needed
+  if (rootNode.children.length > 0 && rootNode.totalTime === 0) {
+    rootNode.totalTime = rootNode.children.reduce((sum, c) => sum + c.totalTime, 0);
+  }
+  rootNode.time = rootNode.totalTime - rootNode.children.reduce((sum, c) => sum + c.totalTime, 0);
+
+  return {
+    timestamp: new Date().toISOString(),
+    totalTime: rootNode.totalTime,
+    nodeCount,
+    raw: data,
+    tree: rootNode,
+  };
+}
+
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
+/**
+ * Infer the node type from its name
+ */
+function inferNodeType(name: string, frame?: any): string {
+  if (frame?.type) return frame.type;
+  
+  const nameLower = name.toLowerCase();
+  
+  // Liquid-specific patterns
+  if (nameLower === "liquid") return "root";
+  if (nameLower.includes("layout/")) return "layout";
+  if (nameLower.includes("template") || nameLower.includes("templates/")) return "template";
+  if (nameLower.includes("section") || nameLower.includes("sections/")) return "section";
+  if (nameLower.includes("snippet") || nameLower.includes("snippets/")) return "snippet";
+  if (nameLower.includes("block") || nameLower.includes("blocks/")) return "block";
+  
+  // Liquid tag patterns from flame graph
+  if (nameLower.startsWith("tag:")) return "tag";
+  if (nameLower.startsWith("render") || nameLower.startsWith("tag:render")) return "render";
+  if (nameLower.startsWith("tag:if") || nameLower.startsWith("tag:for")) return "tag";
+  if (nameLower.startsWith("tag:sections")) return "sections";
+  if (nameLower.startsWith("tag:section")) return "section";
+  if (nameLower.includes("json_template")) return "template";
+  if (nameLower.includes("liquid_template")) return "template";
+  if (nameLower.includes("raw_section") || nameLower.includes("raw_on")) return "section";
+  
+  if (nameLower.startsWith("{%")) return "tag";
+  if (nameLower.startsWith("{{")) return "output";
+  
+  return "other";
 }
 
 /**
- * Normalize raw profiling data into our standard format
+ * Count nodes recursively
  */
-function normalizeProfilingData(rawData: any): ProfilingData {
-  // Handle different data structures from Shopify
+function countNodes(node: ProfileNode): number {
+  let count = 1;
+  for (const child of node.children) {
+    count += countNodes(child);
+  }
+  return count;
+}
+
+/**
+ * Normalize a generic (non-speedscope) JSON profiling response
+ */
+function normalizeGenericProfilingData(rawData: any): ProfilingData {
   if (rawData.nodes || rawData.children) {
     return {
       timestamp: new Date().toISOString(),
@@ -597,7 +437,6 @@ function normalizeProfilingData(rawData: any): ProfilingData {
     };
   }
 
-  // Fallback: treat entire object as raw data
   return {
     timestamp: new Date().toISOString(),
     totalTime: rawData.totalTime || rawData.total_time || rawData.duration || rawData.time || 0,
@@ -608,14 +447,60 @@ function normalizeProfilingData(rawData: any): ProfilingData {
 }
 
 /**
- * Count nodes recursively
+ * Parse Server-Timing header into profiling data (fallback for basic data)
  */
-function countNodes(data: any): number {
-  if (!data || typeof data !== "object") return 0;
-  let count = 1;
-  const children = data.children || data.nodes || [];
-  if (Array.isArray(children)) {
-    for (const child of children) count += countNodes(child);
+function parseServerTimingHeader(header: string): ProfilingData | null {
+  try {
+    const entries = header.split(",").map((entry) => {
+      const parts = entry.trim().split(";");
+      const name = parts[0]?.trim();
+      let duration = 0;
+      let description = "";
+
+      for (const part of parts.slice(1)) {
+        const [key, val] = part.split("=");
+        if (key?.trim() === "dur") duration = parseFloat(val || "0");
+        if (key?.trim() === "desc") description = (val || "").replace(/"/g, "");
+      }
+
+      return { name, duration, description };
+    });
+
+    if (entries.length > 0) {
+      const totalTime = entries.reduce((sum, e) => sum + e.duration, 0);
+      return {
+        timestamp: new Date().toISOString(),
+        totalTime,
+        nodeCount: entries.length,
+        raw: { serverTiming: entries, type: "basic" },
+        tree: {
+          name: "root",
+          children: entries.map((e) => ({
+            name: e.description || e.name,
+            time: e.duration,
+          })),
+        },
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
   }
-  return count;
+}
+
+/**
+ * Normalize store URL for consistent usage
+ */
+function normalizeStoreUrl(storeUrl: string): string {
+  let normalized = storeUrl
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "")
+    .toLowerCase();
+  
+  if (!normalized.includes(".myshopify.com") && !normalized.includes(".")) {
+    normalized = `${normalized}.myshopify.com`;
+  }
+  
+  return normalized;
 }
