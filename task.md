@@ -92,11 +92,16 @@
 - [x] Graceful re-authentication prompt when tokens expire
   - Context-aware error messages in `page-profiler.ts`: distinguishes "not authenticated", "expired + refresh failed", and "expired + no refresh token"
 
-### 8c: Multi-page & comparison features
+### 8c: Multi-page & comparison features ✅ (v0.3.0)
 
-- [ ] Implement page comparison tool (profile two pages, show diff)
-- [ ] Create batch profiling for multiple pages at once
-- [ ] Add historical profiling data storage for trend tracking
+- [x] Implement page comparison tool (profile two pages, show diff)
+  - `compare_pages` tool: profiles both in parallel, shows delta, template-by-template diff, unique recommendations per page
+- [x] Create batch profiling for multiple pages at once
+  - `batch_profile` tool: profiles up to 10 pages in parallel, sorts by slowest, shows per-page issues and top templates
+- [x] Add historical profiling data storage for trend tracking
+  - `profile-history.ts` module: file-based history at `~/.shopify-theme-inspector/history/`
+  - `get_profile_history` tool: view trends (improving/degrading/stable), list profiled pages, clear history
+  - All profiling tools auto-save snapshots (profile_page, get_bottlenecks, compare_pages, batch_profile)
 
 ### 8d: Export & integration
 

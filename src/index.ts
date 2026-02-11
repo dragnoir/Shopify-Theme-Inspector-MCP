@@ -32,6 +32,7 @@ import { logger } from "./utils/logger.js";
 import { profilePage } from "./profiler/page-profiler.js";
 import { generateSummary } from "./profiler/flamegraph-parser.js";
 import { generateRecommendations } from "./profiler/recommendations.js";
+import { saveProfileSnapshot, getProfileHistory, getProfiledPages, clearProfileHistory } from "./profiler/profile-history.js";
 
 // Create the MCP server instance
 const server = new McpServer({
@@ -71,7 +72,10 @@ server.tool(
               "profile_page (full speedscope flame graph!)",
               "get_profile_summary",
               "find_slow_templates",
-              "get_bottlenecks (NEW: auto-detect anti-patterns)",
+              "get_bottlenecks (auto-detect anti-patterns)",
+              "compare_pages (diff two pages)",
+              "batch_profile (profile multiple pages)",
+              "get_profile_history (trend tracking)",
               "analyze_liquid_file",
             ],
           }, null, 2),
@@ -325,6 +329,11 @@ server.tool(
     // Generate auto-recommendations
     const recommendations = generateRecommendations(result.data, result.summary);
 
+    // Auto-save to history
+    if (result.summary) {
+      try { saveProfileSnapshot(result.storeUrl, result.pagePath, result.summary, recommendations); } catch (_) {}
+    }
+
     return {
       content: [
         {
@@ -499,6 +508,11 @@ server.tool(
 
     const report = generateRecommendations(result.data, result.summary);
 
+    // Auto-save to history
+    if (result.summary) {
+      try { saveProfileSnapshot(result.storeUrl, result.pagePath, result.summary, report); } catch (_) {}
+    }
+
     return {
       content: [
         {
@@ -599,6 +613,278 @@ server.tool(
         content: [{ type: "text", text: JSON.stringify({ success: false, error: errorMessage }, null, 2) }]
       };
     }
+  }
+);
+
+// ============================================================================
+// TOOL: compare_pages
+// Profile two pages and compare their performance side-by-side
+// ============================================================================
+server.tool(
+  "compare_pages",
+  "Profile two pages on the same store and compare their performance side-by-side. Shows differences in render time, template breakdown, and recommendations. Great for A/B testing template changes or comparing product vs collection page performance.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePathA: z.string().describe("First page path (e.g., '/' or '/products/my-product')"),
+    pagePathB: z.string().describe("Second page path to compare against"),
+  },
+  async ({ storeUrl, pagePathA, pagePathB }) => {
+    logger.info(`Tool 'compare_pages' called`, { storeUrl, pagePathA, pagePathB });
+
+    // Profile both pages in parallel
+    const [resultA, resultB] = await Promise.all([
+      profilePage({ storeUrl, pagePath: pagePathA }),
+      profilePage({ storeUrl, pagePath: pagePathB }),
+    ]);
+
+    if (!resultA.success || !resultA.data || !resultA.summary) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          success: false,
+          error: `Failed to profile page A (${pagePathA}): ${resultA.error || "No data"}`,
+        }, null, 2) }],
+      };
+    }
+    if (!resultB.success || !resultB.data || !resultB.summary) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          success: false,
+          error: `Failed to profile page B (${pagePathB}): ${resultB.error || "No data"}`,
+        }, null, 2) }],
+      };
+    }
+
+    const recsA = generateRecommendations(resultA.data, resultA.summary);
+    const recsB = generateRecommendations(resultB.data, resultB.summary);
+
+    // Auto-save both to history
+    try { saveProfileSnapshot(resultA.storeUrl, resultA.pagePath, resultA.summary, recsA); } catch (_) {}
+    try { saveProfileSnapshot(resultB.storeUrl, resultB.pagePath, resultB.summary, recsB); } catch (_) {}
+
+    const timeA = recsA.totalRenderTimeMs;
+    const timeB = recsB.totalRenderTimeMs;
+    const deltaMs = timeB - timeA;
+    const deltaPercent = timeA > 0 ? (deltaMs / timeA) * 100 : 0;
+
+    // Build template comparison
+    const allTemplates = new Set<string>();
+    for (const t of resultA.summary.templateBreakdown) allTemplates.add(t.file);
+    for (const t of resultB.summary.templateBreakdown) allTemplates.add(t.file);
+
+    const templateComparison = Array.from(allTemplates).map((file) => {
+      const a = resultA.summary!.templateBreakdown.find((t) => t.file === file);
+      const b = resultB.summary!.templateBreakdown.find((t) => t.file === file);
+      return {
+        file,
+        pageA: a ? { totalTime: a.totalTime, renders: a.renders, percentage: a.percentage } : null,
+        pageB: b ? { totalTime: b.totalTime, renders: b.renders, percentage: b.percentage } : null,
+        deltaMs: (b?.totalTime || 0) - (a?.totalTime || 0),
+      };
+    }).sort((a, b) => Math.abs(b.deltaMs) - Math.abs(a.deltaMs)).slice(0, 15);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            storeUrl: resultA.storeUrl,
+            comparison: {
+              pageA: {
+                path: pagePathA,
+                totalRenderTimeMs: timeA,
+                rating: recsA.overallRating,
+                nodeCount: resultA.data.nodeCount,
+                issues: { critical: recsA.summary.critical, warning: recsA.summary.warning, info: recsA.summary.info },
+              },
+              pageB: {
+                path: pagePathB,
+                totalRenderTimeMs: timeB,
+                rating: recsB.overallRating,
+                nodeCount: resultB.data.nodeCount,
+                issues: { critical: recsB.summary.critical, warning: recsB.summary.warning, info: recsB.summary.info },
+              },
+              delta: {
+                renderTimeMs: Math.round(deltaMs * 100) / 100,
+                renderTimePercent: Math.round(deltaPercent * 100) / 100,
+                verdict: Math.abs(deltaPercent) < 5
+                  ? "Both pages have similar render times."
+                  : deltaMs > 0
+                    ? `Page B is ${Math.abs(deltaPercent).toFixed(0)}% slower than Page A.`
+                    : `Page B is ${Math.abs(deltaPercent).toFixed(0)}% faster than Page A.`,
+              },
+            },
+            templateComparison,
+            recommendationsOnlyInA: recsA.recommendations
+              .filter((ra) => !recsB.recommendations.some((rb) => rb.id === ra.id))
+              .map((r) => ({ id: r.id, title: r.title, severity: r.severity })),
+            recommendationsOnlyInB: recsB.recommendations
+              .filter((rb) => !recsA.recommendations.some((ra) => ra.id === rb.id))
+              .map((r) => ({ id: r.id, title: r.title, severity: r.severity })),
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
+// TOOL: batch_profile
+// Profile multiple pages in one call
+// ============================================================================
+server.tool(
+  "batch_profile",
+  "Profile multiple pages on the same store in a single call. Returns a summary comparison of all pages sorted by render time. Useful for finding the slowest pages on a site. Maximum 10 pages per call.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePaths: z.array(z.string()).min(1).max(10).describe("Array of page paths to profile (e.g., ['/', '/collections/all', '/products/my-product'])"),
+  },
+  async ({ storeUrl, pagePaths }) => {
+    logger.info(`Tool 'batch_profile' called`, { storeUrl, pageCount: pagePaths.length });
+
+    // Profile all pages in parallel
+    const results = await Promise.all(
+      pagePaths.map((pagePath) => profilePage({ storeUrl, pagePath }))
+    );
+
+    const pageResults = results.map((result, idx) => {
+      if (!result.success || !result.data || !result.summary) {
+        return {
+          pagePath: pagePaths[idx],
+          success: false,
+          error: result.error || "No data",
+        };
+      }
+
+      const recs = generateRecommendations(result.data, result.summary);
+
+      // Auto-save to history
+      try { saveProfileSnapshot(result.storeUrl, result.pagePath, result.summary, recs); } catch (_) {}
+
+      return {
+        pagePath: pagePaths[idx],
+        success: true,
+        totalRenderTimeMs: recs.totalRenderTimeMs,
+        rating: recs.overallRating,
+        nodeCount: result.data.nodeCount,
+        issues: {
+          critical: recs.summary.critical,
+          warning: recs.summary.warning,
+          info: recs.summary.info,
+        },
+        estimatedSavingsMs: recs.summary.estimatedSavingsMs,
+        topTemplates: result.summary.templateBreakdown.slice(0, 3).map((t) => ({
+          file: t.file,
+          totalTime: t.totalTime,
+          percentage: t.percentage,
+        })),
+      };
+    });
+
+    // Sort by render time (slowest first among successful ones)
+    const successful = pageResults.filter((p) => p.success && "totalRenderTimeMs" in p);
+    const failed = pageResults.filter((p) => !p.success);
+    successful.sort((a, b) => ((b as any).totalRenderTimeMs || 0) - ((a as any).totalRenderTimeMs || 0));
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            storeUrl,
+            totalPages: pagePaths.length,
+            successfulProfiles: successful.length,
+            failedProfiles: failed.length,
+            pages: [...successful, ...failed],
+            summary: successful.length > 0 ? {
+              slowestPage: (successful[0] as any).pagePath,
+              fastestPage: (successful[successful.length - 1] as any).pagePath,
+              averageRenderTimeMs: Math.round(
+                successful.reduce((sum, p) => sum + ((p as any).totalRenderTimeMs || 0), 0) / successful.length * 100
+              ) / 100,
+            } : undefined,
+          }, null, 2),
+        },
+      ],
+    };
+  }
+);
+
+// ============================================================================
+// TOOL: get_profile_history
+// View historical profiling data and performance trends
+// ============================================================================
+server.tool(
+  "get_profile_history",
+  "View profiling history and performance trends for a store. Shows how render times have changed over time. Every profiling call is automatically saved to history. Use this to track the impact of optimizations.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+    pagePath: z.string().optional().describe("Filter history to a specific page path. If omitted, lists all profiled pages."),
+    limit: z.number().optional().describe("Maximum number of history entries to return (default: 10)"),
+    clearHistory: z.boolean().optional().describe("Set to true to clear history for this store/page."),
+  },
+  async ({ storeUrl, pagePath, limit, clearHistory: shouldClear }) => {
+    logger.info(`Tool 'get_profile_history' called`, { storeUrl, pagePath, limit });
+
+    if (shouldClear) {
+      const deleted = clearProfileHistory(storeUrl, pagePath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: `Cleared ${deleted} history entries${pagePath ? ` for ${pagePath}` : ""}.`,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    // If no pagePath, list all profiled pages
+    if (!pagePath) {
+      const pages = getProfiledPages(storeUrl);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              storeUrl,
+              profiledPages: pages,
+              message: pages.length === 0
+                ? "No profiling history found. Profile a page first using 'profile_page', 'get_bottlenecks', or 'batch_profile'."
+                : `Found ${pages.length} profiled page(s). Specify a pagePath to see trend details.`,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+
+    // Get trend for specific page
+    const history = getProfileHistory(storeUrl, pagePath, limit || 10);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            success: true,
+            storeUrl: history.storeUrl,
+            pagePath: history.pagePath,
+            trend: history.trend,
+            snapshots: history.snapshots.map((s) => ({
+              timestamp: s.timestamp,
+              totalRenderTimeMs: s.totalRenderTimeMs,
+              rating: s.overallRating,
+              recommendations: s.recommendations,
+              topSlowTemplates: s.topSlowTemplates,
+            })),
+          }, null, 2),
+        },
+      ],
+    };
   }
 );
 
