@@ -652,6 +652,44 @@ async function refreshAndExchange(
 }
 
 // ============================================================================
+// Retry Logic with Exponential Backoff
+// ============================================================================
+
+/**
+ * Retry a function with exponential backoff
+ * @param fn The async function to retry
+ * @param maxRetries Maximum number of retry attempts
+ * @param initialDelayMs Initial delay in milliseconds
+ * @returns The result of the function
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  initialDelayMs: number = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      if (attempt === maxRetries) {
+        break;
+      }
+      
+      // Exponential backoff: 1s, 2s, 4s
+      const delayMs = initialDelayMs * Math.pow(2, attempt - 1);
+      logger.warn(`Token refresh attempt ${attempt} failed: ${lastError.message}. Retrying in ${delayMs}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+  
+  throw lastError || new Error('Token refresh failed after retries');
+}
+
+// ============================================================================
 // Public API: Get a valid subject access token for profiling requests
 // ============================================================================
 
@@ -687,7 +725,13 @@ export async function getProfilingAccessToken(storeUrl: string): Promise<string 
 
   try {
     logger.info("Refreshing token using refresh_token grant...");
-    const refreshed = await refreshAndExchange(tokens.clientToken.refreshToken);
+    // Use retry with exponential backoff to handle transient network errors
+    // tokens is guaranteed non-null here because we checked refreshToken exists above
+    const refreshed = await retryWithBackoff(
+      () => refreshAndExchange(tokens!.clientToken.refreshToken!),
+      3,  // max 3 retries
+      1000 // start with 1 second delay
+    );
     
     // Preserve the refresh token if the response didn't include a new one
     if (!refreshed.clientToken.refreshToken && tokens.clientToken.refreshToken) {
@@ -705,7 +749,7 @@ export async function getProfilingAccessToken(storeUrl: string): Promise<string 
     return tokens.subjectToken.accessToken;
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
-    logger.error(`Token refresh failed: ${errorMsg}`);
+    logger.error(`Token refresh failed after retries: ${errorMsg}`);
     
     // If refresh fails with a 4xx error, the refresh token is likely revoked
     if (errorMsg.includes("400") || errorMsg.includes("401") || errorMsg.includes("403")) {
