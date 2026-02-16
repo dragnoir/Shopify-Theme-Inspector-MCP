@@ -38,7 +38,7 @@ import { exportSpeedscopeJson, exportCsv, exportMarkdown } from "./profiler/prof
 // Create the MCP server instance
 const server = new McpServer({
   name: "shopify-theme-inspector",
-  version: "0.3.0",
+  version: "0.4.0",
 });
 
 // ============================================================================
@@ -59,7 +59,7 @@ server.tool(
           text: JSON.stringify({
             status: "healthy",
             server: "shopify-theme-inspector",
-            version: "0.3.0",
+            version: "0.4.0",
             timestamp: new Date().toISOString(),
             authMethod: "OAuth2 (same as Chrome extension)",
             authenticatedStores: oauthStores.length,
