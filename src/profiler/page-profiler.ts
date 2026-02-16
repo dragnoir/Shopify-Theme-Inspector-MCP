@@ -22,6 +22,71 @@ import { analyzeProfile } from "./profile-analyzer.js";
 import { logger } from "../utils/logger.js";
 
 // ============================================================================
+// Rate Limiting Configuration
+// ============================================================================
+
+/**
+ * Rate limiter to prevent Shopify API throttling.
+ * Shopify can throttle requests if they're made too frequently.
+ */
+class RateLimiter {
+  private lastRequestTime: Map<string, number> = new Map();
+  
+  /** Minimum interval between requests to the same store (in ms) */
+  private readonly minIntervalMs: number;
+  
+  /** Minimum interval between ANY profile requests (global throttle) */
+  private readonly globalMinIntervalMs: number;
+  
+  private lastGlobalRequestTime: number = 0;
+
+  constructor(options?: { minIntervalMs?: number; globalMinIntervalMs?: number }) {
+    // Default: 2 seconds between requests to the same store
+    // This is conservative to avoid Shopify throttling
+    this.minIntervalMs = options?.minIntervalMs ?? 2000;
+    // Default: 500ms between any profile requests (global throttle)
+    this.globalMinIntervalMs = options?.globalMinIntervalMs ?? 500;
+  }
+
+  /**
+   * Wait if necessary to respect rate limits before making a request.
+   * @param storeUrl The normalized store URL
+   */
+  async waitForRateLimit(storeUrl: string): Promise<void> {
+    const now = Date.now();
+    
+    // Check global rate limit
+    const timeSinceLastGlobal = now - this.lastGlobalRequestTime;
+    if (timeSinceLastGlobal < this.globalMinIntervalMs) {
+      const waitTime = this.globalMinIntervalMs - timeSinceLastGlobal;
+      logger.debug(`Global rate limit: waiting ${waitTime}ms`);
+      await this.sleep(waitTime);
+    }
+    
+    // Check per-store rate limit
+    const lastRequest = this.lastRequestTime.get(storeUrl) ?? 0;
+    const timeSinceLastRequest = now - lastRequest;
+    
+    if (timeSinceLastRequest < this.minIntervalMs) {
+      const waitTime = this.minIntervalMs - timeSinceLastRequest;
+      logger.debug(`Per-store rate limit [${storeUrl}]: waiting ${waitTime}ms`);
+      await this.sleep(waitTime);
+    }
+    
+    // Update last request times
+    this.lastGlobalRequestTime = Date.now();
+    this.lastRequestTime.set(storeUrl, Date.now());
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+}
+
+// Singleton rate limiter instance
+export const rateLimiter = new RateLimiter();
+
+// ============================================================================
 // Speedscope data types (from the Chrome extension's expected response)
 // ============================================================================
 
@@ -83,6 +148,9 @@ export async function profilePage(options: ProfilePageOptions): Promise<ProfileR
 
   // Normalize the store URL
   const normalizedUrl = normalizeStoreUrl(storeUrl);
+
+  // Apply rate limiting to prevent Shopify API throttling
+  await rateLimiter.waitForRateLimit(normalizedUrl);
 
   // Try OAuth2 token-based profiling first (the correct method)
   const accessToken = await getProfilingAccessToken(normalizedUrl);
