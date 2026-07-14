@@ -13,7 +13,72 @@ Shopify Theme Inspector MCP connects Shopify's server-side Liquid profiler to AI
 > [!NOTE]
 > This is an unofficial community project. It is not affiliated with or supported by Shopify.
 
-## What can it do?
+## Shopify store owner? Start here
+
+This tool helps answer a practical question:
+
+> **Which parts of my Shopify theme are making Shopify work harder before it can send the page to a customer?**
+
+You can ask that question in normal language. Your AI assistant runs the technical checks, reads Shopify's profiling data, and explains the findings without expecting you to understand a flame graph.
+
+For example, a report can tell you that:
+
+- A homepage section is doing a large amount of server-side work.
+- The same product, menu, price, or image code is being rendered many times.
+- A third-party app block appears frequently in the slowest part of the profile.
+- A collection or product template deserves attention before less important code.
+- A recent theme change improved, worsened, or did not meaningfully change Liquid render time.
+
+The result is a **prioritized investigation plan** that you can understand yourself or give to a Shopify developer. It helps replace “the store feels slow” with evidence about which Liquid files, sections, snippets, and operations deserve attention.
+
+> [!IMPORTANT]
+> The MCP diagnoses and explains potential theme bottlenecks. It does **not** automatically edit or publish your live theme. A theme developer should review, test, and deploy code changes safely—ideally on a duplicate theme first.
+
+## What does “MCP” mean?
+
+MCP stands for **Model Context Protocol**. In simple terms, it is a way to give an AI assistant access to a specialized set of tools.
+
+Without this MCP, an AI assistant cannot normally request your store's Shopify Liquid performance profile directly. With it, the assistant can run authorized, read-only profiling checks and discuss the results with you.
+
+Think of it as a local bridge:
+
+```text
+You ask a question
+        ↓
+Your AI assistant chooses the right inspection tool
+        ↓
+Shopify returns Liquid profiling data for the requested page
+        ↓
+The AI explains the evidence and suggests what to investigate
+```
+
+## How it can help your Shopify business
+
+| Situation | How the MCP helps |
+|---|---|
+| The homepage feels slow | Finds the Liquid sections, snippets, and operations using the most server-rendering time. |
+| Collection pages became slower as the catalogue grew | Compares pages and looks for repeated product, menu, filter, or loop work. |
+| You installed or removed an app | Shows whether app-related theme blocks appear in expensive parts of the profile. |
+| An agency or developer optimized the theme | Saves profile history so you can compare results before and after the work. |
+| You do not know where to begin | Ranks likely bottlenecks so the team can investigate the highest-impact areas first. |
+| You need to brief a developer | Produces a readable Markdown or CSV report with technical evidence and relevant file information when available. |
+| Different page types behave differently | Compares the homepage, collections, products, cart, and other public storefront URLs. |
+
+Finding and correcting Liquid bottlenecks can reduce Shopify's server-side theme-rendering work. However, this tool does not promise a particular Lighthouse score, Core Web Vitals result, search ranking, or sales increase. Those outcomes also depend on images, JavaScript, apps, network conditions, customer devices, theme design, and many other factors.
+
+## What happens during an inspection?
+
+1. **You choose a page**, such as the homepage, a collection, or a product.
+2. **You sign in to Shopify** with an account authorized to access that store.
+3. **The MCP requests a read-only Liquid profile** for the page.
+4. **Shopify returns timing data** showing how the theme was rendered on the server.
+5. **Your AI assistant explains the profile** and organizes the findings by likely importance.
+6. **You or your developer decide what to change.** The MCP does not change the theme.
+7. **You run the profile again** after a safe theme update to see whether the result improved.
+
+For more reliable comparisons, profile the same page several times. Shopify infrastructure and cache state can cause normal variation between runs.
+
+## What can it inspect?
 
 - Profile any page on a Shopify store you are authorized to inspect.
 - Explain slow Liquid sections, snippets, blocks, tags, and app embeds.
@@ -37,7 +102,30 @@ You need:
 
 You do **not** need to download this repository when using the npm package.
 
-## Easiest setup: Codex
+## npm package details
+
+The MCP is published as a public package on npm, so supported AI applications can download and start it for you.
+
+| Detail | Value |
+|---|---|
+| Package | [`shopify-theme-inspector-mcp`](https://www.npmjs.com/package/shopify-theme-inspector-mcp) |
+| Current release | `0.5.0` ([release notes](https://github.com/dragnoir/Shopify-Theme-Inspector-MCP/releases/tag/v0.5.0)) |
+| Runtime | Node.js 18 or newer |
+| License | MIT |
+| Source code | [GitHub repository](https://github.com/dragnoir/Shopify-Theme-Inspector-MCP) |
+| MCP connection type | Local STDIO process |
+
+The examples below use `npx -y shopify-theme-inspector-mcp@latest`. `npx` downloads the public package when needed and starts the MCP locally. You do not need a global installation, a cloned repository, or an npm account.
+
+To check the newest published version:
+
+```bash
+npm view shopify-theme-inspector-mcp version
+```
+
+Using `@latest` automatically selects the current npm release. Teams that require repeatable environments can replace it with a fixed version, such as `shopify-theme-inspector-mcp@0.5.0`.
+
+## Connect to Codex
 
 Open a terminal and run:
 
@@ -45,11 +133,71 @@ Open a terminal and run:
 codex mcp add shopify-theme-inspector -- npx -y shopify-theme-inspector-mcp@latest
 ```
 
-Restart Codex. Then ask:
+Restart Codex. You can confirm the server is registered with:
+
+```bash
+codex mcp list
+```
+
+Then ask:
 
 > Use the shopify-theme-inspector health_check tool and show me the result.
 
-Codex stores local MCP configuration in `~/.codex/config.toml`. The Codex app, CLI, and IDE extension share that configuration. See the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp) for the current interface and configuration options.
+Codex stores local MCP configuration in `~/.codex/config.toml`. The Codex app, CLI, and IDE extension share that configuration on the same Codex host. You can also add the server through **Settings → MCP servers** in supported Codex interfaces. See the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp) for current configuration options.
+
+## Connect to Claude Code
+
+Open a terminal and run:
+
+```bash
+claude mcp add --transport stdio --scope user shopify-theme-inspector -- npx -y shopify-theme-inspector-mcp@latest
+```
+
+The `--scope user` option makes the MCP available across your Claude Code projects. Confirm the connection with:
+
+```bash
+claude mcp list
+```
+
+Inside Claude Code, you can also run `/mcp` to view the server and its tools. Then ask:
+
+> Use the shopify-theme-inspector health_check tool and explain the result.
+
+See the official [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp) for scopes, server management, and troubleshooting.
+
+## Connect to Claude Desktop
+
+Claude Desktop can run this package as a local MCP server on macOS or Windows:
+
+1. Install Node.js 18 or newer.
+2. Open **Claude Desktop → Settings → Developer → Edit Config**.
+3. Add the configuration below inside the `mcpServers` object.
+4. Save the file, fully quit Claude Desktop, and reopen it.
+
+```json
+{
+  "mcpServers": {
+    "shopify-theme-inspector": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "shopify-theme-inspector-mcp@latest"]
+    }
+  }
+}
+```
+
+If you already have other MCP servers, keep them and add only the `shopify-theme-inspector` entry. Do not create a second `mcpServers` object.
+
+After restarting, open the **Connectors** menu from the `+` button in the chat box to confirm the tools are available. Then ask Claude:
+
+> Use Shopify Theme Inspector health_check and explain whether everything is ready.
+
+The configuration file is normally located at:
+
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+See the official MCP guide for [connecting local servers to Claude Desktop](https://modelcontextprotocol.io/docs/develop/connect-local-servers).
 
 ## Setup in other MCP apps
 
@@ -122,6 +270,31 @@ That is enough to start. The AI chooses the profiling tools and turns the result
 
 > Export a Markdown performance report for the homepage of https://example-store.com/.
 
+### Create a report for your developer or agency
+
+> Profile the homepage of https://example-store.com/. Create a handoff report for my Shopify developer with an owner-friendly summary, evidence for every finding, relevant Liquid files and lines, recommended fixes, risks to check before changing anything, and a before-and-after testing plan. Do not edit the theme.
+
+### Separate business decisions from code changes
+
+> Review the homepage profile and separate the recommendations into: things I can decide as the store owner, things a Shopify developer should investigate, and things that need more evidence before anyone changes the theme.
+
+## Do I need a Shopify developer?
+
+You do not need to understand programming to follow the setup, request a profile, or read an owner-friendly report. The AI assistant can explain technical terms and help you prepare a clear brief. If you are uncomfortable installing Node.js or using a terminal, ask a developer or technical team member to complete the one-time setup for you.
+
+You will usually want a Shopify theme developer to implement the recommendations. Liquid performance work can affect product cards, menus, pricing, localization, analytics, app features, and other storefront behavior. A developer can confirm the cause, make changes on a duplicate theme, test the storefront, and publish only after the change is safe.
+
+A useful report should contain:
+
+- **An owner summary:** what was inspected and why the result matters.
+- **Prioritized findings:** what deserves attention now, later, or only if more evidence appears.
+- **Evidence:** timings, repetition counts, template names, and file or line information when Shopify provides it.
+- **A recommended action:** what the developer should investigate—not just a generic instruction to “optimize the theme.”
+- **Risks and trade-offs:** features or business behavior that must continue working.
+- **A validation plan:** how to profile and test the page again after the change.
+
+Treat recommendations as leads to investigate, not permission to delete theme or app code. A frequently rendered component may still be essential to the shopping experience.
+
 ## What the AI can inspect
 
 | Tool | What it does |
@@ -154,6 +327,21 @@ For most users, `login`, `get_profile_summary`, `get_bottlenecks`, and `find_slo
 - **Render/event count** highlights repeated work inside loops and nested theme structures.
 
 Do not add every template percentage together as guaranteed savings; parent and child timings can overlap. Run several profiles and prioritize items that stay near the top.
+
+## Plain-English glossary
+
+| Term | Meaning |
+|---|---|
+| **Theme** | The templates and code that control how your online store looks and behaves. |
+| **Liquid** | Shopify's template language. It builds page content on Shopify's servers before the page reaches the shopper. |
+| **Template** | The main layout for a type of page, such as a product or collection page. |
+| **Section** | A configurable part of a theme page, such as a banner, product grid, or featured collection. |
+| **Snippet** | A smaller reusable piece of Liquid code, such as a product card, price, or icon. |
+| **App block or embed** | Theme code added by a Shopify app to provide a storefront feature. |
+| **Server-side render time** | Time Shopify spends processing the Liquid theme before sending the response. It is only one part of the shopper's total page-load experience. |
+| **Bottleneck** | Work that consumes enough time or repeats enough times to deserve investigation. |
+| **Flame graph** | A technical visualization showing where rendering time was spent. The MCP translates this data into summaries and recommendations. |
+| **Profile** | One recorded measurement of how Shopify rendered a particular storefront page. |
 
 ## What it detects
 
