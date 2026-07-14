@@ -109,10 +109,11 @@ The MCP is published as a public package on npm, so supported AI applications ca
 | Detail | Value |
 |---|---|
 | Package | [`shopify-theme-inspector-mcp`](https://www.npmjs.com/package/shopify-theme-inspector-mcp) |
-| Current release | `0.5.0` ([release notes](https://github.com/dragnoir/Shopify-Theme-Inspector-MCP/releases/tag/v0.5.0)) |
+| Current release | [`0.5.1`](https://www.npmjs.com/package/shopify-theme-inspector-mcp) |
 | Runtime | Node.js 18 or newer |
 | License | MIT |
 | Source code | [GitHub repository](https://github.com/dragnoir/Shopify-Theme-Inspector-MCP) |
+| MCP Registry identity | `io.github.dragnoir/shopify-theme-inspector` |
 | MCP connection type | Local STDIO process |
 
 The examples below use `npx -y shopify-theme-inspector-mcp@latest`. `npx` downloads the public package when needed and starts the MCP locally. You do not need a global installation, a cloned repository, or an npm account.
@@ -123,7 +124,7 @@ To check the newest published version:
 npm view shopify-theme-inspector-mcp version
 ```
 
-Using `@latest` automatically selects the current npm release. Teams that require repeatable environments can replace it with a fixed version, such as `shopify-theme-inspector-mcp@0.5.0`.
+Using `@latest` automatically selects the current npm release. Teams that require repeatable environments can replace it with a fixed version, such as `shopify-theme-inspector-mcp@0.5.1`.
 
 ## Connect to Codex
 
@@ -273,6 +274,8 @@ That is enough to start. The AI chooses the profiling tools and turns the result
 ### Create a report for your developer or agency
 
 > Profile the homepage of https://example-store.com/. Create a handoff report for my Shopify developer with an owner-friendly summary, evidence for every finding, relevant Liquid files and lines, recommended fixes, risks to check before changing anything, and a before-and-after testing plan. Do not edit the theme.
+
+See the [sanitized example homepage report](examples/example-homepage-performance-report.md) to understand the expected output before profiling your own store. It uses fictional store data and contains no merchant information or authentication data.
 
 ### Separate business decisions from code changes
 
