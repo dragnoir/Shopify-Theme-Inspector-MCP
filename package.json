@@ -1,6 +1,7 @@
 {
   "name": "shopify-theme-inspector-mcp",
-  "version": "0.5.0",
+  "version": "0.5.1",
+  "mcpName": "io.github.dragnoir/shopify-theme-inspector",
   "description": "Let AI assistants profile Shopify Liquid performance, find slow theme code, and explain what to fix in plain language.",
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +10,7 @@
   },
   "files": [
     "dist",
+    "examples",
     "README.md",
     "LICENSE"
   ],
@@ -63,7 +65,7 @@
     "@types/node": "^20.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
-    "vitest": "^2.0.0"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=18.0.0"
