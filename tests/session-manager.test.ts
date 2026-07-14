@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Mock date for testing
 const mockFutureDate = new Date('2026-03-01T00:00:00.000Z');
@@ -46,8 +46,12 @@ function getStorefrontUrl(storeUrl: string): string {
 
 describe('isSessionValid', () => {
   beforeEach(() => {
-    // Mock Date to return a fixed time
-    vi.spyOn(Date, 'now').mockImplementation(() => mockFutureDate.getTime());
+    vi.useFakeTimers();
+    vi.setSystemTime(mockFutureDate);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('should return true for future expiration', () => {
@@ -77,8 +81,8 @@ describe('isSessionValid', () => {
       expiresAt: '2026-03-01T00:00:00.000Z' // Same as mock Date
     };
     
-    // When expiresAt equals current time, it's considered valid (expires > now)
-    expect(isSessionValid(session)).toBe(true);
+    // A session is valid only when expiresAt is strictly later than now.
+    expect(isSessionValid(session)).toBe(false);
   });
 });
 

@@ -17,6 +17,10 @@ debug-*.mjs
 debug-*.ts
 debug_*.png
 
+# Generated reports and npm archives
+reports/
+*.tgz
+
 # OS files
 .DS_Store
 Thumbs.db

@@ -353,7 +353,7 @@ function isSpeedscopeFormat(data: any): data is SpeedscopeFile {
  * Each event references a frame index. By processing O/C events in order,
  * we can reconstruct a hierarchical call tree (flame graph).
  */
-function parseSpeedscopeData(data: SpeedscopeFile): ProfilingData {
+export function parseSpeedscopeData(data: SpeedscopeFile): ProfilingData {
   const profiles = data.profiles;
   const frames = data.shared.frames;
 
@@ -370,7 +370,7 @@ function parseSpeedscopeData(data: SpeedscopeFile): ProfilingData {
   // Use the first (usually only) profile
   const profile = profiles[0];
   const unit = profile.unit || "microseconds";
-  const unitMultiplier = unit === "microseconds" ? 0.001 : unit === "milliseconds" ? 1 : 1;
+  const unitMultiplier = timeUnitMultiplierToMilliseconds(unit);
 
   // Build the call tree from evented profile
   const rootNode: ProfileNode = {
@@ -436,6 +436,23 @@ function parseSpeedscopeData(data: SpeedscopeFile): ProfilingData {
     raw: data,
     tree: rootNode,
   };
+}
+
+/** Convert speedscope time units to the millisecond unit used by public tools. */
+export function timeUnitMultiplierToMilliseconds(unit: string): number {
+  switch (unit.toLowerCase()) {
+    case "nanoseconds":
+      return 0.000001;
+    case "microseconds":
+      return 0.001;
+    case "milliseconds":
+      return 1;
+    case "seconds":
+      return 1000;
+    default:
+      // Shopify historically emits microseconds when the unit is omitted.
+      return 0.001;
+  }
 }
 
 // ============================================================================
