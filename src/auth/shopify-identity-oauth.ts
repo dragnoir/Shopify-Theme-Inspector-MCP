@@ -21,6 +21,7 @@
 import puppeteer, { Browser, Page } from "puppeteer";
 import crypto from "crypto";
 import { logger } from "../utils/logger.js";
+import { openInExistingChrome } from "./external-chrome.js";
 
 // ============================================================================
 // Shopify Identity OAuth2 Configuration
@@ -83,6 +84,22 @@ export interface OAuthLoginResult {
   tokens?: OAuthTokens;
 }
 
+export interface ExternalOAuthStartResult {
+  success: boolean;
+  storeUrl: string;
+  message: string;
+  authorizationUrl?: string;
+  callbackUrlPrefix?: string;
+}
+
+interface PendingExternalOAuth {
+  storeUrl: string;
+  codeVerifier: string;
+  state: string;
+  redirectUri: string;
+  createdAt: number;
+}
+
 // ============================================================================
 // Token Storage (in-memory + file-based)
 // ============================================================================
@@ -93,6 +110,7 @@ import os from "os";
 
 const TOKEN_DIR = path.join(os.homedir(), ".shopify-theme-inspector");
 const TOKEN_FILE = path.join(TOKEN_DIR, "oauth-tokens.json");
+const PENDING_OAUTH_FILE = path.join(TOKEN_DIR, "pending-oauth.json");
 
 function ensureTokenDir(): void {
   if (!fs.existsSync(TOKEN_DIR)) {
@@ -292,6 +310,166 @@ async function getOpenIdConfig(): Promise<OpenIdConfig> {
  */
 const CHROME_EXTENSION_REDIRECT_URI = 
   "https://fndnankcflemoafdeboboehphmiijkgp.chromiumapp.org/auth0";
+
+/**
+ * Begin OAuth in the user's already-running Chrome. This deliberately returns
+ * before the redirect because an external browser cannot be intercepted by
+ * Puppeteer. Call completeOAuthInExistingChrome with the final address-bar URL.
+ */
+export async function beginOAuthInExistingChrome(
+  storeUrl: string,
+): Promise<ExternalOAuthStartResult> {
+  const normalizedUrl = normalizeForKey(storeUrl);
+  const existing = getOAuthTokens(normalizedUrl);
+  if (existing && !isTokenExpired(existing.subjectToken)) {
+    return {
+      success: true,
+      storeUrl: normalizedUrl,
+      message: `Already authenticated. Token valid until ${existing.expiresAt}`,
+    };
+  }
+
+  const config = await getOpenIdConfig();
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = await generateCodeChallenge(codeVerifier);
+  const state = base64URLEncode(crypto.randomBytes(24));
+  const redirectUri = CHROME_EXTENSION_REDIRECT_URI;
+  const scope = `openid profile ${DEVTOOLS_SCOPE} ${COLLABORATORS_SCOPE}`;
+
+  const authUrl = new URL(config.authorization_endpoint);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("client_id", OAUTH2_CLIENT_ID);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", scope);
+  authUrl.searchParams.set("state", state);
+
+  savePendingExternalOAuth({
+    storeUrl: normalizedUrl,
+    codeVerifier,
+    state,
+    redirectUri,
+    createdAt: Date.now(),
+  });
+
+  try {
+    openInExistingChrome(authUrl.toString());
+  } catch (error) {
+    deletePendingExternalOAuth();
+    throw error;
+  }
+
+  return {
+    success: true,
+    storeUrl: normalizedUrl,
+    message:
+      "OAuth opened in the existing Chrome profile. Complete Shopify authorization, then copy the full final URL from Chrome's address bar and call complete_login_in_chrome.",
+    authorizationUrl: authUrl.toString(),
+    callbackUrlPrefix: redirectUri,
+  };
+}
+
+/** Complete a two-step external-Chrome OAuth flow using the final redirect URL. */
+export async function completeOAuthInExistingChrome(
+  storeUrl: string,
+  callbackUrl: string,
+): Promise<OAuthLoginResult> {
+  const normalizedUrl = normalizeForKey(storeUrl);
+  const pending = loadPendingExternalOAuth();
+
+  if (!pending || pending.storeUrl !== normalizedUrl) {
+    return {
+      success: false,
+      storeUrl: normalizedUrl,
+      message: "No pending Chrome OAuth flow was found for this store. Call login_in_chrome first.",
+    };
+  }
+
+  if (Date.now() - pending.createdAt > 10 * 60 * 1000) {
+    deletePendingExternalOAuth();
+    return {
+      success: false,
+      storeUrl: normalizedUrl,
+      message: "The pending Chrome OAuth flow expired. Call login_in_chrome again.",
+    };
+  }
+
+  try {
+    const callback = new URL(callbackUrl.trim());
+    const expected = new URL(pending.redirectUri);
+    if (callback.origin !== expected.origin || callback.pathname !== expected.pathname) {
+      throw new Error(`Expected a callback URL beginning with ${pending.redirectUri}`);
+    }
+
+    const oauthError = callback.searchParams.get("error");
+    if (oauthError) {
+      throw new Error(callback.searchParams.get("error_description") || oauthError);
+    }
+
+    if (callback.searchParams.get("state") !== pending.state) {
+      throw new Error("OAuth state did not match the pending login. Start the login again.");
+    }
+
+    const code = callback.searchParams.get("code");
+    if (!code) throw new Error("The callback URL does not contain an authorization code.");
+
+    const config = await getOpenIdConfig();
+    const clientToken = await exchangeCodeForToken(
+      config,
+      code,
+      pending.codeVerifier,
+      pending.redirectUri,
+    );
+    const subjectToken = await exchangeForSubjectToken(config, clientToken.accessToken);
+    const tokens: OAuthTokens = {
+      clientToken,
+      subjectToken,
+      storeUrl: normalizedUrl,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + subjectToken.expiresIn).toISOString(),
+    };
+
+    saveOAuthTokens(tokens);
+    deletePendingExternalOAuth();
+    return {
+      success: true,
+      storeUrl: normalizedUrl,
+      message: "Successfully authenticated through the existing Chrome profile.",
+      tokens,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      storeUrl: normalizedUrl,
+      message: `OAuth completion failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function savePendingExternalOAuth(pending: PendingExternalOAuth): void {
+  ensureTokenDir();
+  fs.writeFileSync(PENDING_OAUTH_FILE, JSON.stringify(pending, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+}
+
+function loadPendingExternalOAuth(): PendingExternalOAuth | null {
+  try {
+    return JSON.parse(fs.readFileSync(PENDING_OAUTH_FILE, "utf8")) as PendingExternalOAuth;
+  } catch {
+    return null;
+  }
+}
+
+function deletePendingExternalOAuth(): void {
+  try {
+    fs.unlinkSync(PENDING_OAUTH_FILE);
+  } catch {
+    // Missing or already removed.
+  }
+}
 
 /**
  * Perform the full OAuth2 PKCE flow to obtain storefront-renderer devtools tokens.

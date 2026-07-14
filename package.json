@@ -1,7 +1,7 @@
 {
   "name": "shopify-theme-inspector-mcp",
-  "version": "0.4.0",
-  "description": "MCP server for profiling and debugging Liquid templates on Shopify stores. Provides AI agents with deep Shopify Liquid performance analysis, anti-pattern detection, and optimization recommendations.",
+  "version": "0.5.0",
+  "description": "Let AI assistants profile Shopify Liquid performance, find slow theme code, and explain what to fix in plain language.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run test:run && npm run build",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "inspector": "npx @modelcontextprotocol/inspector node dist/index.js",
@@ -35,6 +35,8 @@
     "flame-graph",
     "speedscope",
     "ai",
+    "codex",
+    "chatgpt",
     "claude",
     "gemini",
     "cursor"
@@ -49,6 +51,9 @@
   },
   "author": "dragnoir",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "puppeteer": "^22.0.0",

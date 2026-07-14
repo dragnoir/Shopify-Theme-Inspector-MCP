@@ -7,6 +7,8 @@ import { z } from "zod";
 // NEW OAuth2 auth (same as Chrome extension) - for profiling
 import {
   loginWithOAuth,
+  beginOAuthInExistingChrome,
+  completeOAuthInExistingChrome,
   getOAuthTokens,
   deleteOAuthTokens,
   getOAuthenticatedStores,
@@ -34,11 +36,17 @@ import { generateSummary } from "./profiler/flamegraph-parser.js";
 import { generateRecommendations } from "./profiler/recommendations.js";
 import { saveProfileSnapshot, getProfileHistory, getProfiledPages, clearProfileHistory } from "./profiler/profile-history.js";
 import { exportSpeedscopeJson, exportCsv, exportMarkdown } from "./profiler/profile-export.js";
+import { VERSION } from "./version.js";
 
 // Create the MCP server instance
 const server = new McpServer({
   name: "shopify-theme-inspector",
-  version: "0.4.0",
+  version: VERSION,
+}, {
+  instructions:
+    "Profile Shopify Liquid rendering without changing the store. Start with health_check, then get_auth_status. " +
+    "If authentication is needed, use login; use login_in_chrome plus complete_login_in_chrome when the user asks to reuse an existing Chrome profile. " +
+    "For a readable audit, combine get_profile_summary, get_bottlenecks, and find_slow_templates. Explain findings in plain language and prioritize measured impact.",
 });
 
 // ============================================================================
@@ -59,7 +67,7 @@ server.tool(
           text: JSON.stringify({
             status: "healthy",
             server: "shopify-theme-inspector",
-            version: "0.4.0",
+            version: VERSION,
             timestamp: new Date().toISOString(),
             authMethod: "OAuth2 (same as Chrome extension)",
             authenticatedStores: oauthStores.length,
@@ -67,6 +75,8 @@ server.tool(
             capabilities: [
               "health_check",
               "login (OAuth2 via Shopify Identity)",
+              "login_in_chrome (start OAuth in the existing Chrome profile)",
+              "complete_login_in_chrome (finish external Chrome OAuth)",
               "login_legacy (cookie-based, for Admin API)",
               "logout",
               "get_auth_status",
@@ -134,6 +144,71 @@ server.tool(
       };
     }
   }
+);
+
+// ============================================================================
+// TOOLS: login_in_chrome / complete_login_in_chrome
+// Two-step OAuth that reuses an already-running signed-in Chrome profile.
+// ============================================================================
+server.tool(
+  "login_in_chrome",
+  "Start Shopify OAuth in the user's existing Chrome profile without closing Chrome. After authorization, copy the full final callback URL and pass it to complete_login_in_chrome.",
+  {
+    storeUrl: z.string().describe("The Shopify store URL"),
+  },
+  async ({ storeUrl }) => {
+    try {
+      logger.info(`Tool 'login_in_chrome' called for: ${storeUrl}`);
+      const result = await beginOAuthInExistingChrome(storeUrl);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: result.success,
+            storeUrl: result.storeUrl,
+            message: result.message,
+            callbackUrlPrefix: result.callbackUrlPrefix,
+            authorizationUrl: result.authorizationUrl,
+          }, null, 2),
+        }],
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            storeUrl,
+            message: `Chrome OAuth start failed: ${error instanceof Error ? error.message : String(error)}`,
+          }, null, 2),
+        }],
+      };
+    }
+  },
+);
+
+server.tool(
+  "complete_login_in_chrome",
+  "Complete a login_in_chrome flow using the full final chromiumapp.org callback URL copied from Chrome's address bar.",
+  {
+    storeUrl: z.string().describe("The same Shopify store URL used with login_in_chrome"),
+    callbackUrl: z.string().describe("The full final URL from Chrome's address bar, including code and state"),
+  },
+  async ({ storeUrl, callbackUrl }) => {
+    const result = await completeOAuthInExistingChrome(storeUrl, callbackUrl);
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          success: result.success,
+          storeUrl: result.storeUrl,
+          message: result.message,
+          authMethod: "OAuth2 through existing Chrome",
+          expiresAt: result.tokens?.expiresAt,
+        }, null, 2),
+      }],
+    };
+  },
 );
 
 // ============================================================================
@@ -994,7 +1069,7 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Shopify Theme Inspector MCP server v0.3.0 running on stdio");
+  console.error(`Shopify Theme Inspector MCP server v${VERSION} running on stdio`);
   console.error("Auth: OAuth2 via Shopify Identity (auto-refresh enabled)");
   console.error("Tools: profile_page, get_bottlenecks, compare_pages, batch_profile, export_profile, get_profile_history");
 }
